@@ -22,7 +22,6 @@
       height: 100dvh;
       display: flex;
       flex-direction: column;
-      align-items: center;
     }
 
     /* ── Header ── */
@@ -78,11 +77,29 @@
     }
     #model-select:focus { border-color: var(--brand-accent); }
 
+    #show-sidebar-btn {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: #003a73;
+      border: 1px solid var(--brand-primary);
+      border-radius: 6px;
+      color: #cdd9e5;
+      font-size: .9rem;
+      width: 32px;
+      height: 32px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+      title: "Show sidebar";
+    }
+    #show-sidebar-btn:hover { background: var(--brand-primary); }
+
     /* ── Welcome banner ── */
     #welcome-banner {
       width: 100%;
       max-width: 760px;
-      margin-top: 1.25rem;
+      margin: 1.25rem auto 0;
       padding: .85rem 1.1rem;
       background: var(--brand-light);
       border: 1px solid #c2d8f0;
@@ -91,8 +108,26 @@
       font-size: .87rem;
       color: #0a3a6e;
       line-height: 1.55;
+      flex-shrink: 0;
     }
     #welcome-banner strong { color: var(--brand-primary); }
+
+    /* ── App layout ── */
+    .app-layout {
+      display: flex;
+      flex: 1;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    /* ── Main panel ── */
+    .main-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      align-items: center;
+    }
 
     /* ── Chat window ── */
     #chat-window {
@@ -230,6 +265,169 @@
       transition: background .15s;
     }
     #clear-btn:hover { background: #f6f8fa; }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 280px;
+      flex-shrink: 0;
+      border-left: 1px solid #e5e7eb;
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+      overflow: hidden;
+    }
+    .sidebar.sidebar--hidden { display: none; }
+
+    .sidebar-header {
+      background: var(--brand-dark);
+      color: #fff;
+      padding: 0.6rem 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      gap: .5rem;
+    }
+
+    .sidebar-tabs {
+      display: flex;
+      gap: .35rem;
+    }
+
+    .sidebar-tab {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 20px;
+      color: #cdd9e5;
+      font-size: .78rem;
+      font-weight: 500;
+      padding: .25rem .7rem;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .sidebar-tab:hover { background: rgba(255,255,255,0.1); color: #fff; }
+    .sidebar-tab.active {
+      background: var(--brand-primary);
+      border-color: var(--brand-primary);
+      color: #fff;
+    }
+
+    .sidebar-actions {
+      display: flex;
+      align-items: center;
+      gap: .3rem;
+    }
+
+    .sidebar-actions button {
+      background: transparent;
+      border: none;
+      color: #7da8cc;
+      font-size: 1rem;
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+    }
+    .sidebar-actions button:hover { color: #fff; background: rgba(255,255,255,0.1); }
+
+    .sidebar-content {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .sidebar-content.hidden { display: none; }
+
+    /* ── Booking cards ── */
+    .booking-card {
+      border-bottom: 1px solid #e5e7eb;
+      padding: 0.65rem 0.75rem;
+    }
+
+    .booking-ref {
+      font-size: .78rem;
+      font-weight: 700;
+      color: var(--brand-primary);
+      letter-spacing: .03em;
+    }
+
+    .booking-passenger {
+      font-size: .85rem;
+      color: #1f2328;
+      margin-top: .12rem;
+    }
+
+    .booking-route {
+      font-size: .78rem;
+      color: #57606a;
+      margin-top: .18rem;
+    }
+
+    .booking-date {
+      font-size: .78rem;
+      color: #57606a;
+      margin-top: .1rem;
+    }
+
+    .booking-footer {
+      margin-top: .3rem;
+      display: flex;
+      align-items: center;
+      gap: .4rem;
+    }
+
+    .status-badge {
+      display: inline-block;
+      font-size: .7rem;
+      font-weight: 600;
+      padding: .1rem .45rem;
+      border-radius: 20px;
+      letter-spacing: .02em;
+    }
+    .status-badge.confirmed { background: #dcfce7; color: #166534; }
+    .status-badge.cancelled { background: #fee2e2; color: #991b1b; }
+    .status-badge.pending   { background: #fef3c7; color: #92400e; }
+
+    /* ── Payment card entries ── */
+    .card-entry {
+      border-bottom: 1px solid #e5e7eb;
+      padding: 0.65rem 0.75rem;
+    }
+
+    .card-label {
+      font-size: .85rem;
+      font-weight: 700;
+      color: #1f2328;
+    }
+
+    .card-holder {
+      font-size: .82rem;
+      color: #1f2328;
+      margin-top: .1rem;
+    }
+
+    .card-expiry {
+      font-size: .78rem;
+      color: #57606a;
+      margin-top: .1rem;
+    }
+
+    /* ── Sidebar empty state ── */
+    .sidebar-empty {
+      padding: 1.25rem .75rem;
+      font-size: .82rem;
+      color: #57606a;
+      text-align: center;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 700px) {
+      #welcome-banner { margin: .75rem .75rem 0; }
+      .sidebar { width: 100%; position: absolute; top: 65px; right: 0; bottom: 0; z-index: 10; }
+    }
   </style>
 </head>
 <body>
@@ -255,6 +453,7 @@
   <div class="header-right">
     <span class="header-label">Model</span>
     <select id="model-select" title="Choose model" aria-label="Choose model"></select>
+    <button id="show-sidebar-btn" title="Show sidebar" aria-label="Show sidebar">☰</button>
   </div>
 </header>
 
@@ -263,29 +462,54 @@
   Ask me anything about flights, hotel bookings, travel policies, expense reports, or trip planning.
 </div>
 
-<div id="chat-window" role="log" aria-live="polite" aria-label="Chat messages"></div>
+<div class="app-layout">
+  <div class="main-panel">
+    <div id="chat-window" role="log" aria-live="polite" aria-label="Chat messages"></div>
 
-<div id="input-area">
-  <textarea
-    id="user-input"
-    rows="1"
-    placeholder="Ask about flights, hotels, travel policy…"
-    aria-label="Message input"
-  ></textarea>
-  <button id="clear-btn" title="Clear conversation">Clear</button>
-  <button id="send-btn" title="Send message" aria-label="Send">
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-    </svg>
-  </button>
+    <div id="input-area">
+      <textarea
+        id="user-input"
+        rows="1"
+        placeholder="Ask about flights, hotels, travel policy…"
+        aria-label="Message input"
+      ></textarea>
+      <button id="clear-btn" title="Clear conversation">Clear</button>
+      <button id="send-btn" title="Send message" aria-label="Send">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-tabs">
+        <button class="sidebar-tab active" data-tab="bookings">Bookings</button>
+        <button class="sidebar-tab" data-tab="cards">Cards</button>
+      </div>
+      <div class="sidebar-actions">
+        <button id="refresh-btn" title="Refresh">↺</button>
+        <button id="sidebar-toggle" title="Hide sidebar">✕</button>
+      </div>
+    </div>
+    <div class="sidebar-content" id="tab-bookings">
+      <!-- booking cards rendered here -->
+    </div>
+    <div class="sidebar-content hidden" id="tab-cards">
+      <!-- payment card entries rendered here -->
+    </div>
+  </aside>
 </div>
 
 <script>
-  const chatWindow  = document.getElementById("chat-window");
-  const userInput   = document.getElementById("user-input");
-  const sendBtn     = document.getElementById("send-btn");
-  const clearBtn    = document.getElementById("clear-btn");
-  const modelSelect = document.getElementById("model-select");
+  const chatWindow     = document.getElementById("chat-window");
+  const userInput      = document.getElementById("user-input");
+  const sendBtn        = document.getElementById("send-btn");
+  const clearBtn       = document.getElementById("clear-btn");
+  const modelSelect    = document.getElementById("model-select");
+  const sidebar        = document.getElementById("sidebar");
+  const showSidebarBtn = document.getElementById("show-sidebar-btn");
 
   let conversationHistory = [];
   let isStreaming = false;
@@ -352,6 +576,104 @@
       opt.disabled = true;
       modelSelect.appendChild(opt);
     }
+  }
+
+  // ── Sidebar: load bookings ───────────────────────────────────────────────────
+
+  async function loadBookings() {
+    const container = document.getElementById("tab-bookings");
+    try {
+      const res  = await fetch("/api/bookings");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load bookings");
+      const bookings = data.bookings || [];
+      if (bookings.length === 0) {
+        container.innerHTML = '<div class="sidebar-empty">No bookings found.</div>';
+        return;
+      }
+      container.innerHTML = bookings.map(b => {
+        const statusClass = (b.status || "pending").toLowerCase();
+        const travelDate  = b.travel_date ? new Date(b.travel_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—";
+        return `
+          <div class="booking-card">
+            <div class="booking-ref">${b.reference || "—"}</div>
+            <div class="booking-passenger">${b.passenger_name || "—"}</div>
+            <div class="booking-route">${b.origin || "—"} → ${b.destination || "—"}</div>
+            <div class="booking-date">${travelDate}</div>
+            <div class="booking-footer">
+              <span class="status-badge ${statusClass}">${b.status || "pending"}</span>
+            </div>
+          </div>`;
+      }).join("");
+    } catch (err) {
+      container.innerHTML = `<div class="sidebar-empty">Could not load bookings.</div>`;
+    }
+  }
+
+  // ── Sidebar: load payment cards ──────────────────────────────────────────────
+
+  async function loadCards() {
+    const container = document.getElementById("tab-cards");
+    try {
+      const res  = await fetch("/api/payment-cards");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load cards");
+      const cards = data.cards || [];
+      if (cards.length === 0) {
+        container.innerHTML = '<div class="sidebar-empty">No payment cards on file.</div>';
+        return;
+      }
+      container.innerHTML = cards.map(card => {
+        const last4 = card.card_number ? card.card_number.slice(-4) : "????";
+        return `
+          <div class="card-entry">
+            <div class="card-label">${card.card_brand || "Card"} •••• ${last4}</div>
+            <div class="card-holder">${card.cardholder_name || "—"}</div>
+            <div class="card-expiry">Exp: ${card.expiry || "—"}</div>
+          </div>`;
+      }).join("");
+    } catch (err) {
+      container.innerHTML = `<div class="sidebar-empty">Could not load payment cards.</div>`;
+    }
+  }
+
+  // ── Sidebar: refresh both tabs ───────────────────────────────────────────────
+
+  function refreshSidebar() {
+    loadBookings();
+    loadCards();
+  }
+
+  // ── Sidebar: tab switching ───────────────────────────────────────────────────
+
+  document.querySelectorAll(".sidebar-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".sidebar-tab").forEach(t => t.classList.remove("active"));
+      btn.classList.add("active");
+      const target = btn.dataset.tab;
+      document.querySelectorAll(".sidebar-content").forEach(panel => {
+        panel.classList.toggle("hidden", panel.id !== `tab-${target}`);
+      });
+    });
+  });
+
+  // ── Sidebar: toggle ──────────────────────────────────────────────────────────
+
+  document.getElementById("sidebar-toggle").addEventListener("click", () => {
+    sidebar.classList.add("sidebar--hidden");
+    showSidebarBtn.style.display = "flex";
+  });
+
+  showSidebarBtn.addEventListener("click", () => {
+    sidebar.classList.remove("sidebar--hidden");
+    showSidebarBtn.style.display = "none";
+  });
+
+  // ── Responsive: hide sidebar on narrow screens ───────────────────────────────
+
+  if (window.innerWidth <= 700) {
+    sidebar.classList.add("sidebar--hidden");
+    showSidebarBtn.style.display = "flex";
   }
 
   // ── Send message ────────────────────────────────────────────────────────────
@@ -427,6 +749,7 @@
       }
 
       conversationHistory.push({ role: "assistant", content: fullReply });
+      refreshSidebar();
 
     } catch (err) {
       assistantBubble.closest(".bubble-row")?.remove();
@@ -460,8 +783,13 @@
 
   userInput.addEventListener("input", autoResize);
 
+  // ── Refresh button ──────────────────────────────────────────────────────────
+
+  document.getElementById("refresh-btn").addEventListener("click", refreshSidebar);
+
   // ── Init ────────────────────────────────────────────────────────────────────
   loadModels();
+  refreshSidebar();
   userInput.focus();
 </script>
 </body>

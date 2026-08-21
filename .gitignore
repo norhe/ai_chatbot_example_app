@@ -28,3 +28,6 @@ ENV/
 
 # Logs
 *.log
+
+# test db
+./postgres-data

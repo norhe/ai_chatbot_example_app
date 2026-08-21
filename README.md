@@ -1,24 +1,93 @@
-# AI Chatbot — Ollama Backend
+# Voyager Travel — AI Booking Assistant
 
-A minimal streaming AI chat web app powered by [Ollama](https://ollama.com/) and Flask.
+A streaming AI travel booking agent powered by [Ollama](https://ollama.com/) and Flask, with a
+PostgreSQL backend and a conversational tool-calling interface for managing bookings and payment cards.
 
-## Requirements
+## Prerequisites
 
-- Python 3.9+
-- [Ollama](https://ollama.com/) running locally with at least one model pulled
+### Python & uv
+Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required. uv manages the virtual
+environment and dependencies — no manual `pip` or `venv` commands needed.
+
+Install uv if you don't have it:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Ollama
+[Ollama](https://ollama.com/) must be running locally with at least one model pulled:
+
+```bash
+ollama pull llama3.2:latest
+```
+
+### PostgreSQL
+
+PostgreSQL 14+ is required. The app connects via a `DATABASE_URL` environment variable and creates
+its schema automatically on first start — no manual SQL needed.
+
+#### Run with Docker
+
+Data is stored in a local `./postgres-data` directory so it survives container restarts.
+
+```bash
+mkdir -p ./postgres-data
+
+docker run -d \
+  --name voyager-postgres \
+  -e POSTGRES_USER=voyager \
+  -e POSTGRES_PASSWORD=voyager \
+  -e POSTGRES_DB=voyager \
+  -p 127.0.0.1:5432:5432 \
+  -v "$(pwd)/postgres-data:/var/lib/postgresql/data" \
+  registry.redhat.io/rhel9/postgresql-16:latest
+```
+
+#### Run with Podman
+
+```bash
+mkdir -p ./postgres-data
+
+podman run -d \
+  --name voyager-postgres \
+  -e POSTGRES_USER=voyager \
+  -e POSTGRES_PASSWORD=voyager \
+  -e POSTGRES_DB=voyager \
+  -p 127.0.0.1:5432:5432 \
+  -v "$(pwd)/postgres-data:/var/lib/postgresql/data:Z" \
+  registry.redhat.io/rhel9/postgresql-16:latest
+```
+
+> The `:Z` volume flag is required on SELinux-enforcing systems (Fedora, RHEL, etc.) to relabel the
+> host directory so the container can write to it.
+
+#### Stop / restart
+
+```bash
+# Docker
+docker stop voyager-postgres
+docker start voyager-postgres
+
+# Podman
+podman stop voyager-postgres
+podman start voyager-postgres
+```
 
 ## Quick start
 
 ```bash
-# 1. Create and activate a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
+# 1. Install dependencies (creates .venv automatically)
+uv sync
 
-# 2. Install dependencies
-pip install -r requirements.txt
+# 2. Set the database connection string
+export DATABASE_URL="postgresql://voyager:voyager@127.0.0.1:5432/voyager"
 
-# 3. Run the server
-python app.py
+# 3. Initialise the database and seed demo data (first run only)
+uv run python db.py
+
+# 4. Run the server
+uv run python app.py
 ```
 
 Then open **http://127.0.0.1:5000** in your browser.
@@ -27,28 +96,35 @@ Then open **http://127.0.0.1:5000** in your browser.
 
 All options are controlled via environment variables:
 
-| Variable         | Default                   | Description                        |
-|------------------|---------------------------|------------------------------------|
-| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API base URL                |
-| `OLLAMA_MODEL`   | `llama3.2:latest`         | Default model (overridable in UI)  |
-| `REQUEST_TIMEOUT`| `120`                     | Seconds before streaming times out |
+| Variable          | Default                    | Description                         |
+|-------------------|----------------------------|-------------------------------------|
+| `DATABASE_URL`    | *(required)*               | PostgreSQL connection string        |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434`  | Ollama API base URL                 |
+| `OLLAMA_MODEL`    | `llama3.2:latest`          | Default model (overridable in UI)   |
+| `REQUEST_TIMEOUT` | `120`                      | Seconds before streaming times out  |
 
 ## Project layout
 
 ```
-app.py            ← Flask backend + streaming SSE endpoint
+app.py             ← Flask backend, tool-call loop, SSE streaming
+db.py              ← PostgreSQL schema, seed data, CRUD helpers
+tools.py           ← Ollama tool schemas and dispatcher
 static/
-  index.html      ← Single-page chat UI (vanilla JS, no build step)
-requirements.txt
+  index.html       ← Single-page chat UI with bookings sidebar (vanilla JS)
+pyproject.toml     ← Project metadata and dependencies (uv)
+uv.lock            ← Pinned dependency lockfile
+.python-version    ← Python version pin (3.12)
 ```
 
 ## API
 
-| Method | Path          | Description                          |
-|--------|---------------|--------------------------------------|
-| GET    | `/`           | Serves the chat UI                   |
-| GET    | `/api/models` | Lists locally available Ollama models|
-| POST   | `/api/chat`   | Streams a chat response (SSE)        |
+| Method | Path                  | Description                           |
+|--------|-----------------------|---------------------------------------|
+| GET    | `/`                   | Serves the chat UI                    |
+| GET    | `/api/models`         | Lists locally available Ollama models |
+| POST   | `/api/chat`           | Streams a chat response (SSE)         |
+| GET    | `/api/bookings`       | Returns all bookings as JSON          |
+| GET    | `/api/payment-cards`  | Returns all payment cards as JSON     |
 
 ### POST `/api/chat` body
 
