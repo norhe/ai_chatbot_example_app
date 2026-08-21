@@ -3,13 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Chatbot</title>
+  <title>Voyager Travel — AI Assistant</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    /* ── Brand tokens ── */
+    :root {
+      --brand-primary: #0057a8;
+      --brand-accent:  #e8a020;
+      --brand-dark:    #00264d;
+      --brand-light:   #e8f1fb;
+    }
+
     body {
       font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-      background: #f0f2f5;
+      background: #f0f4f9;
       color: #1f2328;
       height: 100dvh;
       display: flex;
@@ -20,26 +28,71 @@
     /* ── Header ── */
     header {
       width: 100%;
-      background: #1f2328;
+      background: var(--brand-dark);
       color: #fff;
-      padding: 0 1rem;
-      height: 52px;
+      padding: 0 1.25rem;
+      height: 62px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       flex-shrink: 0;
+      border-bottom: 3px solid var(--brand-accent);
     }
-    header h1 { font-size: 1rem; font-weight: 600; letter-spacing: .02em; }
+
+    .header-brand { display: flex; align-items: center; gap: .65rem; }
+
+    .brand-logo { width: 34px; height: 34px; flex-shrink: 0; }
+
+    .brand-text { display: flex; flex-direction: column; line-height: 1.2; }
+    .brand-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+      color: #fff;
+    }
+    .brand-tagline {
+      font-size: .62rem;
+      font-weight: 400;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--brand-accent);
+    }
+
+    .header-right { display: flex; align-items: center; gap: .6rem; }
+    .header-label {
+      font-size: .72rem;
+      color: #7da8cc;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
     #model-select {
-      background: #2d333b;
+      background: #003a73;
       color: #cdd9e5;
-      border: 1px solid #444c56;
+      border: 1px solid var(--brand-primary);
       border-radius: 6px;
       padding: 4px 8px;
       font-size: .85rem;
       cursor: pointer;
       outline: none;
     }
+    #model-select:focus { border-color: var(--brand-accent); }
+
+    /* ── Welcome banner ── */
+    #welcome-banner {
+      width: 100%;
+      max-width: 760px;
+      margin-top: 1.25rem;
+      padding: .85rem 1.1rem;
+      background: var(--brand-light);
+      border: 1px solid #c2d8f0;
+      border-left: 4px solid var(--brand-primary);
+      border-radius: 8px;
+      font-size: .87rem;
+      color: #0a3a6e;
+      line-height: 1.55;
+    }
+    #welcome-banner strong { color: var(--brand-primary); }
 
     /* ── Chat window ── */
     #chat-window {
@@ -72,8 +125,8 @@
       font-weight: 700;
       color: #fff;
     }
-    .avatar.assistant { background: #3b82d4; }
-    .avatar.user       { background: #7c5cd8; }
+    .avatar.assistant { background: var(--brand-primary); }
+    .avatar.user       { background: var(--brand-accent); color: var(--brand-dark); }
 
     .bubble {
       max-width: 72%;
@@ -86,11 +139,11 @@
     }
     .bubble.assistant {
       background: #fff;
-      border: 1px solid #e5e7eb;
+      border: 1px solid #d4e4f7;
       border-bottom-left-radius: 4px;
     }
     .bubble.user {
-      background: #7c5cd8;
+      background: var(--brand-primary);
       color: #fff;
       border-bottom-right-radius: 4px;
     }
@@ -144,7 +197,7 @@
       background: #fff;
       transition: border-color .15s;
     }
-    #user-input:focus { border-color: #3b82d4; }
+    #user-input:focus { border-color: var(--brand-primary); }
     #user-input::placeholder { color: #8c959f; }
 
     #send-btn {
@@ -152,7 +205,7 @@
       width: 40px; height: 40px;
       border: none;
       border-radius: 10px;
-      background: #3b82d4;
+      background: var(--brand-primary);
       color: #fff;
       cursor: pointer;
       display: flex;
@@ -161,7 +214,7 @@
       transition: background .15s, opacity .15s;
     }
     #send-btn:disabled { opacity: .45; cursor: not-allowed; }
-    #send-btn:hover:not(:disabled) { background: #2563c4; }
+    #send-btn:hover:not(:disabled) { background: #003f80; }
     #send-btn svg { width: 18px; height: 18px; fill: currentColor; }
 
     #clear-btn {
@@ -182,9 +235,33 @@
 <body>
 
 <header>
-  <h1>&#129302; AI Chatbot</h1>
-  <select id="model-select" title="Choose model" aria-label="Choose model"></select>
+  <div class="header-brand">
+    <!-- Voyager plane mark -->
+    <svg class="brand-logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="32" cy="32" r="32" fill="#003a73"/>
+      <!-- globe lines -->
+      <circle cx="32" cy="32" r="20" fill="none" stroke="#1a6bbf" stroke-width="1.5"/>
+      <ellipse cx="32" cy="32" rx="10" ry="20" fill="none" stroke="#1a6bbf" stroke-width="1.5"/>
+      <line x1="12" y1="32" x2="52" y2="32" stroke="#1a6bbf" stroke-width="1.5"/>
+      <!-- paper-plane -->
+      <path d="M18 32 L46 20 L38 32 L46 44 Z" fill="#e8a020"/>
+      <path d="M38 32 L28 36 L18 32" fill="#c07010"/>
+    </svg>
+    <div class="brand-text">
+      <span class="brand-name">VOYAGER TRAVEL</span>
+      <span class="brand-tagline">Your Journey, Our Expertise</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="header-label">Model</span>
+    <select id="model-select" title="Choose model" aria-label="Choose model"></select>
+  </div>
 </header>
+
+<div id="welcome-banner">
+  <strong>Welcome to the Voyager Travel AI Assistant.</strong>
+  Ask me anything about flights, hotel bookings, travel policies, expense reports, or trip planning.
+</div>
 
 <div id="chat-window" role="log" aria-live="polite" aria-label="Chat messages"></div>
 
@@ -192,7 +269,7 @@
   <textarea
     id="user-input"
     rows="1"
-    placeholder="Type a message…"
+    placeholder="Ask about flights, hotels, travel policy…"
     aria-label="Message input"
   ></textarea>
   <button id="clear-btn" title="Clear conversation">Clear</button>
