@@ -41,7 +41,7 @@ docker run -d \
   -e POSTGRES_DB=voyager \
   -p 127.0.0.1:5432:5432 \
   -v "$(pwd)/postgres-data:/var/lib/postgresql/data" \
-  registry.redhat.io/rhel9/postgresql-16:latest
+  postgres:latest
 ```
 
 #### Run with Podman
@@ -56,7 +56,7 @@ podman run -d \
   -e POSTGRES_DB=voyager \
   -p 127.0.0.1:5432:5432 \
   -v "$(pwd)/postgres-data:/var/lib/postgresql/data:Z" \
-  registry.redhat.io/rhel9/postgresql-16:latest
+  postgres:latest
 ```
 
 > The `:Z` volume flag is required on SELinux-enforcing systems (Fedora, RHEL, etc.) to relabel the
