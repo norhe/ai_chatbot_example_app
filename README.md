@@ -40,7 +40,7 @@ docker run -d \
   -e POSTGRES_PASSWORD=voyager \
   -e POSTGRES_DB=voyager \
   -p 127.0.0.1:5432:5432 \
-  -v "$(pwd)/postgres-data:/var/lib/postgresql/data" \
+  -v "$(pwd)/postgres-data:/var/lib/postgresql" \
   postgres:latest
 ```
 
@@ -55,7 +55,7 @@ podman run -d \
   -e POSTGRES_PASSWORD=voyager \
   -e POSTGRES_DB=voyager \
   -p 127.0.0.1:5432:5432 \
-  -v "$(pwd)/postgres-data:/var/lib/postgresql/data:Z" \
+  -v "$(pwd)/postgres-data:/var/lib/postgresql:Z" \
   postgres:latest
 ```
 
