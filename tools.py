@@ -3,10 +3,32 @@ tools.py — Ollama-compatible tool schemas and dispatcher for the Voyager Trave
 
 Exports:
     TOOL_DEFINITIONS  — list of 7 Ollama function-calling schema dicts
-    dispatch_tool     — routes tool calls to db.py helpers
+    TOOL_AGENT_MAP    — maps each tool name to its agent script path
+    dispatch_tool     — spawns the appropriate agent subprocess and returns its JSON result
 """
 
-import db
+import json
+import logging
+import os
+import subprocess
+import sys
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Agent routing table
+# ---------------------------------------------------------------------------
+
+TOOL_AGENT_MAP = {
+    "get_booking":          "agents/read_agent.py",
+    "list_bookings":        "agents/read_agent.py",
+    "create_booking":       "agents/booking_mutation_agent.py",
+    "cancel_booking":       "agents/booking_mutation_agent.py",
+    "list_payment_cards":   "agents/payment_read_agent.py",
+    "add_payment_card":     "agents/payment_write_agent.py",
+    "update_payment_card":  "agents/payment_write_agent.py",
+    "remove_payment_card":  "agents/payment_write_agent.py",
+}
 
 # ---------------------------------------------------------------------------
 # Tool schemas
@@ -195,67 +217,48 @@ TOOL_DEFINITIONS = [
 # ---------------------------------------------------------------------------
 
 def dispatch_tool(name: str, args: dict) -> dict:
-    """Route a tool call to the appropriate db.py helper.
+    """Spawn the appropriate agent subprocess and return its JSON result.
 
     Always returns a plain dict:
       {"result": ...}  on success
-      {"error": "..."}  on failure
-
-    Exceptions are caught and returned as error dicts so the LLM can
-    respond gracefully to failures.
+      {"error": "..."}  on failure or unknown tool
     """
-    try:
-        if name == "create_booking":
-            result = db.create_booking(
-                passenger_name=args["passenger_name"],
-                destination=args["destination"],
-                origin=args["origin"],
-                travel_date=args["travel_date"],
-                return_date=args.get("return_date"),
-            )
-            return {"result": result}
-
-        if name == "get_booking":
-            result = db.get_booking(args["reference"])
-            if result is None:
-                return {"error": "Booking not found"}
-            return {"result": result}
-
-        if name == "list_bookings":
-            result = db.list_bookings(passenger_name=args.get("passenger_name"))
-            return {"result": result}
-
-        if name == "cancel_booking":
-            result = db.cancel_booking(args["reference"])
-            if result is None:
-                return {"error": "Booking not found"}
-            return {"result": result}
-
-        if name == "add_payment_card":
-            result = db.add_payment_card(
-                cardholder_name=args["cardholder_name"],
-                card_number=args["card_number"],
-                card_brand=args["card_brand"],
-                expiry=args["expiry"],
-                billing_address=args["billing_address"],
-            )
-            return {"result": result}
-
-        if name == "update_payment_card":
-            card_id = args["card_id"]
-            other_fields = {k: v for k, v in args.items() if k != "card_id"}
-            result = db.update_payment_card(card_id, **other_fields)
-            if result is None:
-                return {"error": "Card not found"}
-            return {"result": result}
-
-        if name == "remove_payment_card":
-            removed = db.remove_payment_card(args["card_id"])
-            if removed:
-                return {"result": "Card removed successfully"}
-            return {"error": "Card not found"}
-
+    agent_script = TOOL_AGENT_MAP.get(name)
+    if not agent_script:
+        logger.error("dispatch_tool: no agent mapped for tool=%s", name)
         return {"error": f"Unknown tool: {name}"}
 
-    except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)}
+    payload = json.dumps({
+        "tool": name,
+        "args": args,
+        "auth_token": os.environ.get("AUTH_TOKEN", "dev-token"),
+    })
+
+    logger.debug("dispatch_tool: spawning agent=%s tool=%s", agent_script, name)
+
+    try:
+        result = subprocess.run(
+            [sys.executable, agent_script],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        logger.debug("dispatch_tool: agent=%s exit_code=%d stdout=%r stderr=%r",
+                     agent_script, result.returncode,
+                     result.stdout[:500], result.stderr[:500])
+        if result.returncode != 0:
+            logger.error("dispatch_tool: agent=%s failed exit_code=%d stderr=%s",
+                         agent_script, result.returncode, result.stderr.strip())
+            return {"error": f"Agent execution failed: {result.stderr.strip() or 'no stderr'}"}
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            logger.error("dispatch_tool: agent=%s returned non-JSON stdout=%r", agent_script, result.stdout[:500])
+            return {"error": "Agent returned invalid response"}
+    except subprocess.TimeoutExpired:
+        logger.error("dispatch_tool: agent=%s timed out", agent_script)
+        return {"error": "Agent timed out"}
+    except Exception as e:  # noqa: BLE001
+        logger.exception("dispatch_tool: unexpected error for agent=%s", agent_script)
+        return {"error": str(e)}
