@@ -9,11 +9,14 @@ from flask_cors import CORS
 import db
 import tools
 
+_LOG_LEVEL = logging.DEBUG if os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes") else logging.INFO
 logging.basicConfig(
-    level=logging.INFO,
-    format='{"time": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s"}'
+    level=_LOG_LEVEL,
+    format='{"time": "%(asctime)s", "level": "%(levelname)s", "logger": "%(name)s", "message": "%(message)s"}'
 )
 logger = logging.getLogger(__name__)
+if _LOG_LEVEL == logging.DEBUG:
+    logger.debug("Debug logging enabled")
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app, resources={r"/api/*": {"origins": "http://localhost:5000"}})
@@ -44,6 +47,9 @@ Important rules:
   - After creating a booking, always confirm it to the user with the reference code.
   - Never display full card numbers. When referring to a card, use the cardholder name and
     the last 4 digits only (e.g. "Alice Johnson's Visa ending in 1111").
+  - You can only cancel one booking at a time, and only remove one payment card at a time.
+    If the user asks to delete or cancel multiple items in a single request, politely explain
+    this limitation and ask them to confirm each one individually.
   - Be concise, friendly, and professional.
 """
 
@@ -107,9 +113,12 @@ def chat():
                 {"role": "system", "content": SYSTEM_PROMPT.format(date=today)}
             ] + list(client_messages)
 
+            logger.debug("chat/generate: model=%s message_count=%d", model, len(messages))
+
             # ------------------------------------------------------------------
             # Phase 1 — non-streaming request to check for tool calls
             # ------------------------------------------------------------------
+            logger.debug("Phase 1: sending to Ollama (stream=False, tools=%d)", len(tools.TOOL_DEFINITIONS))
             phase1_resp = requests.post(
                 f"{OLLAMA_BASE_URL}/api/chat",
                 json={
@@ -120,12 +129,15 @@ def chat():
                 },
                 timeout=REQUEST_TIMEOUT,
             )
+            logger.debug("Phase 1: Ollama status=%d", phase1_resp.status_code)
             if phase1_resp.status_code != 200:
+                logger.error("Phase 1: Ollama error body: %s", phase1_resp.text[:500])
                 yield f"data: {json.dumps({'error': 'Ollama returned an error'})}\n\n"
                 return
 
             assistant_message = phase1_resp.json()["message"]
             tool_calls = assistant_message.get("tool_calls") or []
+            logger.debug("Phase 1: tool_calls=%d", len(tool_calls))
 
             if tool_calls:
                 # Append the assistant's tool-call message to the conversation
@@ -138,8 +150,10 @@ def chat():
                     args = fn["arguments"]
                     if isinstance(args, str):
                         args = json.loads(args)
+                    logger.debug("Dispatching tool: name=%s args=%s", name, json.dumps(args))
                     result = tools.dispatch_tool(name, args)
-                    logger.info("Tool call dispatched", extra={"tool": name})
+                    logger.info("Tool dispatched: name=%s result_keys=%s", name, list(result.keys()))
+                    logger.debug("Tool result: %s", json.dumps(result))
                     messages.append({
                         "role": "tool",
                         "content": json.dumps(result),
@@ -148,6 +162,7 @@ def chat():
                 # ------------------------------------------------------------------
                 # Phase 2 — stream the final natural-language reply
                 # ------------------------------------------------------------------
+                logger.debug("Phase 2: streaming final reply (message_count=%d)", len(messages))
                 with requests.post(
                     f"{OLLAMA_BASE_URL}/api/chat",
                     json={
@@ -180,10 +195,10 @@ def chat():
                 yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
 
         except requests.RequestException as e:
-            logger.error("Ollama request error", extra={"error": str(e)})
+            logger.error("Ollama request error: %s", str(e))
             yield f"data: {json.dumps({'error': 'Connection to Ollama failed'})}\n\n"
         except Exception as e:
-            logger.error("Unexpected error in generate()", extra={"error": str(e)})
+            logger.exception("Unexpected error in generate()")
             yield f"data: {json.dumps({'error': 'Internal server error'})}\n\n"
 
     return Response(
