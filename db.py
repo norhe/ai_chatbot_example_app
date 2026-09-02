@@ -3,28 +3,75 @@ db.py — PostgreSQL data access layer for the Voyager Travel booking agent.
 
 All database access is centralised here. Nothing else in the app should
 import psycopg2 directly.
+
+Environment variables
+---------------------
+Standard (always required for direct schema-init runs):
+  DATABASE_URL   Full PostgreSQL DSN, e.g. postgresql://user:pass@host:5432/dbname
+
+Vault mode (used by microservices — all four must be set together):
+  VAULT_ADDR     Vault server address, e.g. http://127.0.0.1:8200
+  VAULT_TOKEN    Vault token set by agents/vault_helper.py at startup
+  VAULT_DB_ROLE  Vault database role name to request credentials for
+                 (e.g. voyager_read, voyager_booking_write ...)
+  DB_HOST        PostgreSQL host parsed from DATABASE_URL by start_app.sh
+  DB_PORT        PostgreSQL port
+  DB_NAME        PostgreSQL database name
+
+When VAULT_DB_ROLE is set, get_connection() fetches ephemeral credentials
+from Vault on every call. When it is absent, DATABASE_URL is used directly
+(preserving the ability to run `python db.py` for schema init and seeding).
 """
 
 import os
 import psycopg2
 import psycopg2.extras
+import hvac
 
 
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
 
-def get_connection():
-    """Return a new psycopg2 connection using the DATABASE_URL env var.
+def _get_vault_db_credentials(role: str) -> tuple[str, str]:
+    """Fetch a fresh ephemeral (username, password) from Vault's database secrets engine.
 
-    Raises RuntimeError if DATABASE_URL is not set.
+    Reads VAULT_ADDR and VAULT_TOKEN from the environment.  The token is
+    managed (kept alive) by the background renewal thread in vault_helper.py.
     """
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL environment variable is not set. "
-            "Expected format: postgresql://user:pass@host:5432/dbname"
-        )
+    client = hvac.Client(
+        url=os.environ["VAULT_ADDR"],
+        token=os.environ["VAULT_TOKEN"],
+    )
+    response = client.secrets.database.generate_credentials(name=role)
+    data = response["data"]
+    return data["username"], data["password"]
+
+
+def get_connection():
+    """Return a new psycopg2 connection.
+
+    When VAULT_DB_ROLE is set, fetches ephemeral credentials from Vault and
+    builds the DSN from DB_HOST / DB_PORT / DB_NAME env vars.
+    Falls back to DATABASE_URL when VAULT_DB_ROLE is absent (e.g. direct runs
+    of `python db.py` for schema init and seeding).
+
+    Raises RuntimeError if neither path has the required env vars.
+    """
+    vault_role = os.environ.get("VAULT_DB_ROLE")
+    if vault_role:
+        user, password = _get_vault_db_credentials(vault_role)
+        host = os.environ["DB_HOST"]
+        port = os.environ["DB_PORT"]
+        name = os.environ["DB_NAME"]
+        url = f"postgresql://{user}:{password}@{host}:{port}/{name}"
+    else:
+        url = os.environ.get("DATABASE_URL")
+        if not url:
+            raise RuntimeError(
+                "DATABASE_URL environment variable is not set. "
+                "Expected format: postgresql://user:pass@host:5432/dbname"
+            )
     return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
 
 
@@ -296,11 +343,17 @@ def list_payment_cards():
             return [_row_to_dict(row) for row in cur.fetchall()]
 
 
-def get_payment_card(card_id):
-    """Fetch a single payment card by id. Returns dict or None."""
+def get_payment_card(card_id, name=None):
+    """Fetch a single payment card by id, optionally filtered by cardholder name. Returns dict or None."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM payment_cards WHERE id = %s", (card_id,))
+            if name is not None:
+                cur.execute(
+                    "SELECT * FROM payment_cards WHERE id = %s AND cardholder_name = %s",
+                    (card_id, name),
+                )
+            else:
+                cur.execute("SELECT * FROM payment_cards WHERE id = %s", (card_id,))
             return _row_to_dict(cur.fetchone())
 
 

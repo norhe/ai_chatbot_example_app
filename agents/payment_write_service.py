@@ -1,22 +1,17 @@
-import sys
-import json
-import logging
-import os
-
+import logging, os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
+from flask import Flask, request, jsonify
+from vault_helper import vault_approle_login, start_token_renewal
 
-# ---------------------------------------------------------------------------
-# Debug logging — controlled by the DEBUG env var (1 / true / yes)
-# Writes to stderr so it never contaminates the stdout JSON protocol.
-# ---------------------------------------------------------------------------
 _debug = os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes")
 logging.basicConfig(
-    stream=sys.stderr,
     level=logging.DEBUG if _debug else logging.WARNING,
-    format='{"time": "%(asctime)s", "level": "%(levelname)s", "agent": "payment_write_agent", "message": "%(message)s"}',
+    format='{"time": "%(asctime)s", "level": "%(levelname)s", "service": "payment_write_service", "message": "%(message)s"}',
 )
 logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
 
 
 def validate_token(token: str) -> bool:
@@ -26,20 +21,24 @@ def validate_token(token: str) -> bool:
     return True
 
 
-def main():
-    raw = sys.stdin.read()
-    logger.debug("stdin received: %s", raw[:500])
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "service": "payment_write_service"})
 
-    payload = json.loads(raw)
-    token = payload.get("auth_token", "")
 
+@app.route("/execute", methods=["POST"])
+def execute():
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     if not validate_token(token):
         logger.warning("Auth failed for token=%r", token)
-        print(json.dumps({"error": "Unauthorized"}))
-        sys.exit(1)
+        return jsonify({"error": "Unauthorized"}), 401
 
-    tool = payload["tool"]
-    args = payload.get("args", {})
+    data = request.get_json(silent=True)
+    if not data or "tool" not in data:
+        return jsonify({"error": "Invalid request: 'tool' field required"}), 400
+
+    tool = data["tool"]
+    args = data.get("args", {})
     logger.debug("tool=%s args=%s", tool, json.dumps(args))
 
     if tool == "add_payment_card":
@@ -54,11 +53,9 @@ def main():
             )
         except Exception as e:
             logger.exception("db.add_payment_card raised an exception")
-            print(json.dumps({"error": str(e)}))
-            sys.exit(1)
+            return jsonify({"error": str(e)})
         logger.debug("add_payment_card result: %s", json.dumps(card))
-        print(json.dumps({"result": card}))
-        return
+        return jsonify({"result": card})
 
     if tool == "update_payment_card":
         card_id = args["card_id"]
@@ -69,15 +66,12 @@ def main():
             card = db.update_payment_card(card_id, **fields)
         except Exception as e:
             logger.exception("db.update_payment_card raised an exception")
-            print(json.dumps({"error": str(e)}))
-            sys.exit(1)
+            return jsonify({"error": str(e)})
         logger.debug("update_payment_card returned: %s", json.dumps(card))
         if card is None:
             logger.warning("update_payment_card: card_id=%s not found", card_id)
-            print(json.dumps({"error": "Card not found"}))
-            sys.exit(1)
-        print(json.dumps({"result": card}))
-        return
+            return jsonify({"error": "Card not found"})
+        return jsonify({"result": card})
 
     if tool == "remove_payment_card":
         card_id = args["card_id"]
@@ -86,20 +80,41 @@ def main():
             removed = db.remove_payment_card(card_id)
         except Exception as e:
             logger.exception("db.remove_payment_card raised an exception")
-            print(json.dumps({"error": str(e)}))
-            sys.exit(1)
+            return jsonify({"error": str(e)})
         logger.debug("remove_payment_card returned: %s", removed)
         if not removed:
             logger.warning("remove_payment_card: card_id=%s not found", card_id)
-            print(json.dumps({"error": "Card not found"}))
-            sys.exit(1)
-        print(json.dumps({"result": "Card removed"}))
-        return
+            return jsonify({"error": "Card not found"})
+        return jsonify({"result": "Card removed"})
 
     logger.error("Unknown tool: %s", tool)
-    print(json.dumps({"error": f"Unknown tool: {tool}"}))
-    sys.exit(1)
+    return jsonify({"error": f"Unknown tool: {tool}"}), 400
+
+
+def _init_vault() -> None:
+    """Authenticate to Vault using AppRole creds from the environment.
+
+    Skips setup and falls back to DATABASE_URL if any required env var is
+    absent (allows running the service without Vault for local development).
+    """
+    role_id   = os.environ.get("VAULT_ROLE_ID")
+    secret_id = os.environ.get("VAULT_SECRET_ID")
+    vault_addr = os.environ.get("VAULT_ADDR")
+
+    if not (role_id and secret_id and vault_addr):
+        logger.warning(
+            '{"event": "vault_init_skipped", "reason": "VAULT_ROLE_ID/VAULT_SECRET_ID/VAULT_ADDR not set — falling back to DATABASE_URL"}'
+        )
+        return
+
+    client = vault_approle_login(role_id, secret_id)
+    os.environ["VAULT_TOKEN"]   = client.token
+    os.environ["VAULT_DB_ROLE"] = "voyager_payment_write"
+    start_token_renewal(client, logger)
+    logger.info('{"event": "vault_init_complete", "db_role": "voyager_payment_write"}')
 
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PAYMENT_WRITE_SERVICE_PORT", 5104))
+    _init_vault()
+    app.run(host="127.0.0.1", port=port)

@@ -3,31 +3,32 @@ tools.py — Ollama-compatible tool schemas and dispatcher for the Voyager Trave
 
 Exports:
     TOOL_DEFINITIONS  — list of 7 Ollama function-calling schema dicts
-    TOOL_AGENT_MAP    — maps each tool name to its agent script path
-    dispatch_tool     — spawns the appropriate agent subprocess and returns its JSON result
+    AGENT_URLS        — maps each tool name to its agent microservice base URL
+    dispatch_tool     — POSTs to the appropriate agent microservice and returns its JSON result
 """
 
 import json
 import logging
 import os
-import subprocess
-import sys
+import requests
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Agent routing table
+# Agent service URL routing table
 # ---------------------------------------------------------------------------
 
-TOOL_AGENT_MAP = {
-    "get_booking":          "agents/read_agent.py",
-    "list_bookings":        "agents/read_agent.py",
-    "create_booking":       "agents/booking_mutation_agent.py",
-    "cancel_booking":       "agents/booking_mutation_agent.py",
-    "list_payment_cards":   "agents/payment_read_agent.py",
-    "add_payment_card":     "agents/payment_write_agent.py",
-    "update_payment_card":  "agents/payment_write_agent.py",
-    "remove_payment_card":  "agents/payment_write_agent.py",
+_AGENT_BASE = os.environ.get("AGENT_BASE_URL", "http://127.0.0.1")
+
+AGENT_URLS = {
+    "get_booking":          f"{_AGENT_BASE}:5101",
+    "list_bookings":        f"{_AGENT_BASE}:5101",
+    "create_booking":       f"{_AGENT_BASE}:5102",
+    "cancel_booking":       f"{_AGENT_BASE}:5102",
+    "list_payment_cards":   f"{_AGENT_BASE}:5103",
+    "add_payment_card":     f"{_AGENT_BASE}:5104",
+    "update_payment_card":  f"{_AGENT_BASE}:5104",
+    "remove_payment_card":  f"{_AGENT_BASE}:5104",
 }
 
 # ---------------------------------------------------------------------------
@@ -217,48 +218,42 @@ TOOL_DEFINITIONS = [
 # ---------------------------------------------------------------------------
 
 def dispatch_tool(name: str, args: dict) -> dict:
-    """Spawn the appropriate agent subprocess and return its JSON result.
+    """POST to the appropriate agent microservice and return its JSON result.
 
     Always returns a plain dict:
       {"result": ...}  on success
       {"error": "..."}  on failure or unknown tool
     """
-    agent_script = TOOL_AGENT_MAP.get(name)
-    if not agent_script:
-        logger.error("dispatch_tool: no agent mapped for tool=%s", name)
+    base_url = AGENT_URLS.get(name)
+    if not base_url:
+        logger.error("dispatch_tool: no service URL for tool=%s", name)
         return {"error": f"Unknown tool: {name}"}
 
-    payload = json.dumps({
-        "tool": name,
-        "args": args,
-        "auth_token": os.environ.get("AUTH_TOKEN", "dev-token"),
-    })
-
-    logger.debug("dispatch_tool: spawning agent=%s tool=%s", agent_script, name)
+    token = os.environ.get("AUTH_TOKEN", "dev-token")
+    logger.debug("dispatch_tool: POST %s/execute tool=%s", base_url, name)
 
     try:
-        result = subprocess.run(
-            [sys.executable, agent_script],
-            input=payload,
-            capture_output=True,
-            text=True,
+        resp = requests.post(
+            f"{base_url}/execute",
+            json={"tool": name, "args": args},
+            headers={"Authorization": f"Bearer {token}"},
             timeout=30,
         )
-        logger.debug("dispatch_tool: agent=%s exit_code=%d stdout=%r stderr=%r",
-                     agent_script, result.returncode,
-                     result.stdout[:500], result.stderr[:500])
-        if result.returncode != 0:
-            logger.error("dispatch_tool: agent=%s failed exit_code=%d stderr=%s",
-                         agent_script, result.returncode, result.stderr.strip())
-            return {"error": f"Agent execution failed: {result.stderr.strip() or 'no stderr'}"}
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            logger.error("dispatch_tool: agent=%s returned non-JSON stdout=%r", agent_script, result.stdout[:500])
-            return {"error": "Agent returned invalid response"}
-    except subprocess.TimeoutExpired:
-        logger.error("dispatch_tool: agent=%s timed out", agent_script)
+        logger.debug("dispatch_tool: service=%s status=%d", base_url, resp.status_code)
+        if resp.status_code == 401:
+            logger.error("dispatch_tool: service=%s returned 401 Unauthorized", base_url)
+            return {"error": "Unauthorized"}
+        if resp.status_code != 200:
+            logger.error("dispatch_tool: service=%s HTTP %d body=%s",
+                         base_url, resp.status_code, resp.text[:500])
+            return {"error": f"Agent service error: HTTP {resp.status_code}"}
+        return resp.json()
+    except requests.Timeout:
+        logger.error("dispatch_tool: service=%s timed out", base_url)
         return {"error": "Agent timed out"}
+    except requests.RequestException as e:
+        logger.error("dispatch_tool: service=%s connection error: %s", base_url, e)
+        return {"error": f"Agent unreachable: {e}"}
     except Exception as e:  # noqa: BLE001
-        logger.exception("dispatch_tool: unexpected error for agent=%s", agent_script)
+        logger.exception("dispatch_tool: unexpected error for service=%s", base_url)
         return {"error": str(e)}

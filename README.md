@@ -84,6 +84,8 @@ podman exec -it voyager-postgres psql -U voyager -d voyager
 
 ## Quick start
 
+### Without Vault (direct DATABASE\_URL)
+
 ```bash
 # 1. Install dependencies (creates .venv automatically)
 uv sync
@@ -94,8 +96,43 @@ export DATABASE_URL="postgresql://voyager:voyager@127.0.0.1:5432/voyager"
 # 3. Initialise the database and seed demo data (first run only)
 uv run python db.py
 
-# 4. Run the server
+# 4. Start the agent microservices
+./services/start_services.sh
+
+# 5. Run the orchestrator
 uv run python app.py
+```
+
+To stop the agent services when you're done:
+
+```bash
+./services/stop_services.sh
+```
+
+### With Vault (AppRole + dynamic DB credentials)
+
+```bash
+# 1. Install dependencies
+uv sync
+
+# 2. Set environment — DATABASE_URL is used by setup_vault.sh to configure the
+#    Vault database connection and by db.py for schema init
+export DATABASE_URL="postgresql://voyager:voyager@127.0.0.1:5432/voyager"
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN="<your-vault-dev-root-token>"
+
+# 3. Start Vault in dev mode (separate terminal)
+vault server -dev
+
+# 4. Initialise the database (first run only) — uses DATABASE_URL directly
+uv run python db.py
+
+# 5. Configure Vault — enables database engine, creates roles, policies,
+#    and writes vault_approle_creds/<service>.env for each microservice
+./setup_vault.sh
+
+# 6. Start all five processes (orchestrator + 4 services) with Vault creds
+./start_app.sh
 ```
 
 Then open **http://127.0.0.1:5000** in your browser.
@@ -104,93 +141,107 @@ Then open **http://127.0.0.1:5000** in your browser.
 
 All options are controlled via environment variables:
 
-| Variable          | Default                    | Description                                          |
-|-------------------|----------------------------|------------------------------------------------------|
-| `DATABASE_URL`    | *(required)*               | PostgreSQL connection string                         |
-| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434`  | Ollama API base URL                                  |
-| `OLLAMA_MODEL`    | `llama3.2:latest`          | Default model (overridable in UI)                    |
-| `REQUEST_TIMEOUT` | `120`                      | Seconds before streaming times out                   |
-| `AUTH_TOKEN`      | `dev-token`                | Token passed to each agent for authorization checks  |
-| `DEBUG`           | *(unset)*                  | Set to `1` to enable verbose debug logging           |
+| Variable              | Default                    | Description                                                        |
+|-----------------------|----------------------------|--------------------------------------------------------------------|
+| `DATABASE_URL`        | *(required)*               | PostgreSQL connection string                                       |
+| `OLLAMA_BASE_URL`     | `http://127.0.0.1:11434`  | Ollama API base URL                                                |
+| `OLLAMA_MODEL`        | `llama3.2:latest`          | Default model (overridable in UI)                                  |
+| `REQUEST_TIMEOUT`     | `120`                      | Seconds before streaming times out                                 |
+| `AUTH_TOKEN`          | `dev-token`                | Bearer token sent to each agent service for authorization          |
+| `AGENT_BASE_URL`      | `http://127.0.0.1`         | Base URL for all agent services (override for container deployments) |
+| `DEBUG`               | *(unset)*                  | Set to `1` to enable verbose debug logging                         |
+| `READ_SERVICE_PORT`   | `5101`                     | Port for the ReadService                                           |
+| `BOOKING_SERVICE_PORT`| `5102`                     | Port for the BookingMutationService                                |
+| `PAYMENT_READ_SERVICE_PORT` | `5103`               | Port for the PaymentReadService                                    |
+| `PAYMENT_WRITE_SERVICE_PORT`| `5104`               | Port for the PaymentWriteService                                   |
+
+**Vault env vars** (required only when running with Vault):
+
+| Variable           | Default                    | Description                                              |
+|--------------------|----------------------------|----------------------------------------------------------|
+| `VAULT_ADDR`       | `http://127.0.0.1:8200`    | Vault server address                                     |
+| `VAULT_TOKEN`      | *(set by vault_helper.py)* | Vault token — set automatically after AppRole login      |
+| `VAULT_DB_ROLE`    | *(set by vault_helper.py)* | Vault database role — set automatically per service      |
+| `DB_HOST`          | *(parsed by start_app.sh)* | PostgreSQL host — parsed from `DATABASE_URL` at launch   |
+| `DB_PORT`          | *(parsed by start_app.sh)* | PostgreSQL port — parsed from `DATABASE_URL` at launch   |
+| `DB_NAME`          | *(parsed by start_app.sh)* | PostgreSQL database name — parsed from `DATABASE_URL`    |
 
 ## Debugging
 
 ### Enabling debug logging
 
-Set `DEBUG=1` before starting the server to enable verbose structured logging across all
-layers — the Flask orchestrator, the subprocess dispatcher, and every agent script.
+Set `DEBUG=1` before starting the server and services to enable verbose structured logging
+across all layers — the Flask orchestrator, the HTTP dispatcher, and every agent service.
 
 ```bash
+# Start services with debug logging
+DEBUG=1 ./services/start_services.sh
+
+# Start orchestrator with debug logging (separate terminal)
 DEBUG=1 uv run python app.py
 ```
 
 Accepted values: `1`, `true`, `yes` (case-insensitive). Any other value (or unset) means
-normal `INFO`-level logging.
+normal `WARNING`-level logging for services, `INFO`-level for the orchestrator.
 
 ### What gets logged at each layer
 
 | Layer | File | What `DEBUG=1` adds |
 |---|---|---|
 | Orchestrator | `app.py` | Model, message count, Phase 1 Ollama status, tool name + args, tool result keys, Phase 2 message count |
-| Dispatcher | `tools.py` | Agent script being spawned, subprocess exit code, full stdout/stderr (up to 500 chars) |
-| Each agent | `agents/*.py` | Raw stdin payload, token validation, db function called with args, db return value or exception traceback |
+| Dispatcher | `tools.py` | Service URL being called, HTTP status received |
+| Each service | `agents/*_service.py` | Request token, tool name + args, db function called with args, db return value or exception traceback |
 
-Each log line is JSON with `time`, `level`, `logger` (orchestrator/dispatcher) or `agent`
-(agent scripts) fields, making them easy to filter:
+Each log line is JSON with `time`, `level`, and `logger` or `service` field, making them
+easy to filter. Service logs are written to `services/logs/<name>.log`:
 
 ```bash
-# Show only agent-level debug lines
-DEBUG=1 uv run python app.py 2>&1 | grep '"level": "DEBUG"'
+# Watch all service logs live
+tail -f services/logs/*.log
 
-# Show only errors across all layers
-DEBUG=1 uv run python app.py 2>&1 | grep '"level": "ERROR"'
+# Show only errors across all service logs
+grep '"level": "ERROR"' services/logs/*.log
+
+# Show only orchestrator debug lines
+DEBUG=1 uv run python app.py 2>&1 | grep '"level": "DEBUG"'
 ```
 
-> **Note:** Agent logs are written to `stderr`. The stdout of each agent subprocess is the
-> raw JSON result that the dispatcher parses — mixing log output into stdout would break the
-> wire protocol. When running the full server, agent stderr is captured by the dispatcher and
-> included in error messages on failure; with `DEBUG=1` it also appears in the server logs.
+### Exercising a service directly
 
-### Exercising an agent directly
-
-Each agent script reads a JSON payload from stdin and writes a result to stdout. You can invoke
-one directly without running the server — useful for isolating a broken tool call:
+Each agent service exposes `POST /execute` with a Bearer token header. You can call one
+directly with `curl` without running the full orchestrator:
 
 ```bash
 # Simulate a cancel_booking call
-echo '{"tool":"cancel_booking","args":{"reference":"VT-00001"},"auth_token":"dev-token"}' \
-  | DEBUG=1 DATABASE_URL="postgresql://voyager:voyager@127.0.0.1:5432/voyager" \
-    uv run python agents/booking_mutation_agent.py
+curl -s -X POST http://127.0.0.1:5102/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer dev-token" \
+  -d '{"tool":"cancel_booking","args":{"reference":"VT-00001"}}'
 
 # Simulate a list_bookings call
-echo '{"tool":"list_bookings","args":{},"auth_token":"dev-token"}' \
-  | DEBUG=1 DATABASE_URL="postgresql://voyager:voyager@127.0.0.1:5432/voyager" \
-    uv run python agents/read_agent.py
+curl -s -X POST http://127.0.0.1:5101/execute \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer dev-token" \
+  -d '{"tool":"list_bookings","args":{}}'
 
-# Simulate adding a payment card
-echo '{"tool":"add_payment_card","args":{"cardholder_name":"Jane Smith","card_number":"4111 1111 1111 1111","card_brand":"Visa","expiry":"12/2027","billing_address":"1 Main St"},"auth_token":"dev-token"}' \
-  | DEBUG=1 DATABASE_URL="postgresql://voyager:voyager@127.0.0.1:5432/voyager" \
-    uv run python agents/payment_write_agent.py
+# Check a service health endpoint
+curl -s http://127.0.0.1:5101/health
 ```
-
-Each agent prints its result to stdout and debug trace to stderr, so you see both streams
-interleaved in the terminal.
 
 ### Tracing a failed tool call end-to-end
 
-When a tool call fails in the running server, the dispatcher logs the agent's stderr. With
-`DEBUG=1` you get the full trace from every layer. A typical `cancel_booking` failure
+With `DEBUG=1` you get the full trace from every layer. A typical `cancel_booking` failure
 looks like:
 
 ```
 # app.py — orchestrator
 {"level": "DEBUG", "logger": "app", "message": "Dispatching tool: name=cancel_booking args={\"reference\": \"VT-00999\"}"}
-{"level": "DEBUG", "logger": "tools", "message": "dispatch_tool: spawning agent=agents/booking_mutation_agent.py tool=cancel_booking"}
+{"level": "DEBUG", "logger": "tools", "message": "dispatch_tool: POST http://127.0.0.1:5102/execute tool=cancel_booking"}
 
-# booking_mutation_agent.py — agent stderr (captured and re-logged by dispatcher)
-{"level": "DEBUG", "agent": "booking_mutation_agent", "message": "tool=cancel_booking args={\"reference\": \"VT-00999\"}"}
-{"level": "DEBUG", "agent": "booking_mutation_agent", "message": "Calling db.cancel_booking reference='VT-00999'"}
-{"level": "WARNING","agent": "booking_mutation_agent", "message": "cancel_booking: reference='VT-00999' not found"}
+# services/logs/booking_mutation_service.log — service log
+{"level": "DEBUG", "service": "booking_mutation_service", "message": "tool=cancel_booking args={\"reference\": \"VT-00999\"}"}
+{"level": "DEBUG", "service": "booking_mutation_service", "message": "Calling db.cancel_booking reference='VT-00999'"}
+{"level": "WARNING","service": "booking_mutation_service", "message": "cancel_booking: reference='VT-00999' not found"}
 
 # tools.py — dispatcher reports final result
 {"level": "INFO",  "logger": "app", "message": "Tool dispatched: name=cancel_booking result_keys=['error']"}
@@ -198,33 +249,37 @@ looks like:
 
 ## Agent architecture
 
-Each tool call is dispatched to a dedicated, scoped **subprocess agent** rather than executing
-inline. This creates an explicit permission boundary per agent that can be wired to an external
+Each tool call is dispatched to a dedicated, scoped **HTTP microservice** rather than executing
+inline. This creates an explicit permission boundary per service that can be wired to an external
 auth service without touching the orchestrator or the Ollama tool schemas.
 
 ```
 POST /api/chat
   └─ app.py (orchestrator)
        └─ tools.dispatch_tool(name, args)
-            └─ subprocess.run(agent_script, stdin={"tool","args","auth_token"})
-                 ├─ agents/read_agent.py            — get_booking, list_bookings
-                 ├─ agents/booking_mutation_agent.py — create_booking, cancel_booking
-                 ├─ agents/payment_read_agent.py     — list_payment_cards
-                 └─ agents/payment_write_agent.py    — add/update/remove_payment_card
+            └─ requests.post(<service>/execute, Authorization: Bearer <token>)
+                 ├─ agents/read_service.py             :5101 — get_booking, list_bookings
+                 ├─ agents/booking_mutation_service.py :5102 — create_booking, cancel_booking
+                 ├─ agents/payment_read_service.py     :5103 — list_payment_cards
+                 └─ agents/payment_write_service.py    :5104 — add/update/remove_payment_card
 ```
 
-Each agent:
-1. Reads the JSON payload from **stdin**
-2. Calls `validate_token(token)` — currently a stub that returns `True`
-3. Dispatches to the appropriate `db.*` helper
-4. Writes a JSON result to **stdout** (`{"result": ...}` or `{"error": "..."}`)
+Each service:
+1. Receives the tool name and args from the **POST `/execute` request body**
+2. Reads the auth token from the **`Authorization: Bearer` request header**
+3. Calls `validate_token(token)` — currently a stub that returns `True`
+4. Dispatches to the appropriate `db.*` helper
+5. Returns a JSON response (`{"result": ...}` or `{"error": "..."}`)
+
+Each service also exposes `GET /health` → `{"status": "ok", "service": "<name>"}` used by
+the launcher script to verify startup.
 
 **To integrate a real auth service**, replace the body of `validate_token()` in the relevant
-agent file(s). The `AUTH_TOKEN` env var is the injection point — set it to the token your auth
-service expects:
+service file(s). The `AUTH_TOKEN` env var is the injection point — set it to the token your
+auth service expects:
 
 ```python
-# In any agents/*.py — current stub:
+# In any agents/*_service.py — current stub:
 def validate_token(token: str) -> bool:
     # TODO: replace with external auth service call
     return True
@@ -235,22 +290,78 @@ def validate_token(token: str) -> bool:
     return resp.json().get("valid", False)
 ```
 
+## Vault secret management
+
+The project demonstrates two approaches to database credential management.
+The **current implementation** uses the legacy Vault AppRole + database secrets engine
+pattern. The **planned next phase** adopts Vault 2.1's new Agentic AI primitives.
+
+### Current: Legacy AppRole (implemented)
+
+Each microservice authenticates to Vault at startup using a pre-generated `role_id` /
+`secret_id` pair (written to `vault_approle_creds/<service>.env` by `setup_vault.sh`).
+On every `db.get_connection()` call the service requests a fresh, short-lived PostgreSQL
+credential pair from Vault's database secrets engine. The Vault token is kept alive by a
+background renewal thread in [`agents/vault_helper.py`](agents/vault_helper.py).
+
+**Relevant files:** `setup_vault.sh`, `agents/vault_helper.py`, `db.py`, `start_app.sh`
+
+Permission boundaries are enforced at the **PostgreSQL role level**:
+
+| Service | Vault role | PostgreSQL grants |
+|---|---|---|
+| `read_service` | `voyager_read` | SELECT on bookings |
+| `booking_mutation_service` | `voyager_booking_write` | SELECT, INSERT, UPDATE on bookings |
+| `payment_read_service` | `voyager_payment_read` | SELECT on payment_cards |
+| `payment_write_service` | `voyager_payment_write` | SELECT, INSERT, UPDATE, DELETE on payment_cards |
+
+### Planned: Vault 2.1 Agentic AI (not yet implemented)
+
+Vault 2.1 introduces purpose-built primitives for AI agent workloads:
+
+- **Workload Identity Federation (WIF)** — agents prove identity via a signed JWT generated
+  at runtime, eliminating pre-distributed credential files entirely
+- **`auth/agent/` auth method** — a new Vault auth method that accepts WIF tokens and issues
+  narrowly-scoped Vault tokens with tool-call policy enforcement built in
+- **Tool-call policies** — Vault policies that list the *named tools* an agent is permitted
+  to invoke, not just the secrets paths it can read
+
+This shifts the permission boundary from the PostgreSQL role level to the **individual tool
+level**: Vault can deny `cancel_booking` to a service that is only authorised for
+`list_bookings`, before any database credential is issued.
+
+See **[`vault-agentic-ai-plan.md`](vault-agentic-ai-plan.md)** for the full architecture
+comparison, a side-by-side differences table, and the planned sub-tasks.
+
+---
+
 ## Project layout
 
 ```
-app.py                             ← Flask backend, tool-call loop, SSE streaming
-db.py                              ← PostgreSQL schema, seed data, CRUD helpers
-tools.py                           ← Ollama tool schemas + subprocess dispatcher
+app.py                                  ← Flask orchestrator, tool-call loop, SSE streaming
+db.py                                   ← PostgreSQL schema, seed data, CRUD helpers (Vault-aware)
+tools.py                                ← Ollama tool schemas + HTTP dispatcher
 agents/
-  read_agent.py                    ← get_booking, list_bookings         [read-only]
-  booking_mutation_agent.py        ← create_booking, cancel_booking     [write: bookings]
-  payment_read_agent.py            ← list_payment_cards                 [read: payments]
-  payment_write_agent.py           ← add/update/remove_payment_card     [write: payments]
+  vault_helper.py                       ← AppRole login + background token renewal (Vault helper)
+  read_service.py                       ← get_booking, list_bookings         :5101 [read-only]
+  booking_mutation_service.py           ← create_booking, cancel_booking     :5102 [write: bookings]
+  payment_read_service.py               ← list_payment_cards                 :5103 [read: payments]
+  payment_write_service.py              ← add/update/remove_payment_card     :5104 [write: payments]
+services/
+  start_services.sh                     ← Start all 4 agent services (no-Vault path)
+  stop_services.sh                      ← Stop all 4 agent services
+  logs/                                 ← Per-service stdout/stderr logs (gitignored)
+  pids/                                 ← Per-service PID files (gitignored)
 static/
-  index.html                       ← Single-page chat UI with bookings sidebar (vanilla JS)
-pyproject.toml                     ← Project metadata and dependencies (uv)
-uv.lock                            ← Pinned dependency lockfile
-.python-version                    ← Python version pin (3.12)
+  index.html                            ← Single-page chat UI with bookings sidebar (vanilla JS)
+setup_vault.sh                          ← One-shot Vault config: DB engine, roles, policies, AppRole creds
+start_app.sh                            ← Launch all 5 processes with Vault AppRole credentials
+vault_approle_creds/                    ← Per-service AppRole .env files (gitignored, written by setup_vault.sh)
+pyproject.toml                          ← Project metadata and dependencies (uv)
+uv.lock                                 ← Pinned dependency lockfile
+.python-version                         ← Python version pin (3.12)
+vault-integration-plan.md              ← Plan: legacy AppRole + DB secrets engine (complete)
+vault-agentic-ai-plan.md               ← Plan: Vault 2.1 Agentic AI migration (pending)
 ```
 
 ## API
