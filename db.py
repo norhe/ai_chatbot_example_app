@@ -23,10 +23,13 @@ from Vault on every call. When it is absent, DATABASE_URL is used directly
 (preserving the ability to run `python db.py` for schema init and seeding).
 """
 
+import logging
 import os
 import psycopg2
 import psycopg2.extras
 import hvac
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -39,13 +42,27 @@ def _get_vault_db_credentials(role: str) -> tuple[str, str]:
     Reads VAULT_ADDR and VAULT_TOKEN from the environment.  The token is
     managed (kept alive) by the background renewal thread in vault_helper.py.
     """
-    client = hvac.Client(
-        url=os.environ["VAULT_ADDR"],
-        token=os.environ["VAULT_TOKEN"],
+    vault_addr = os.environ["VAULT_ADDR"]
+    logger.debug(
+        '{"event": "vault_db_creds_request", "role": "%s", "vault_addr": "%s"}',
+        role, vault_addr,
     )
-    response = client.secrets.database.generate_credentials(name=role)
-    data = response["data"]
-    return data["username"], data["password"]
+    try:
+        client = hvac.Client(url=vault_addr, token=os.environ["VAULT_TOKEN"])
+        response = client.secrets.database.generate_credentials(name=role)
+        data = response["data"]
+        logger.debug(
+            '{"event": "vault_db_creds_issued", "role": "%s", "lease_id": "%s", "lease_duration": %s}',
+            role,
+            response.get("lease_id", ""),
+            response.get("lease_duration", ""),
+        )
+        return data["username"], data["password"]
+    except Exception:
+        logger.exception(
+            '{"event": "vault_db_creds_failed", "role": "%s"}', role,
+        )
+        raise
 
 
 def get_connection():
@@ -65,6 +82,10 @@ def get_connection():
         port = os.environ["DB_PORT"]
         name = os.environ["DB_NAME"]
         url = f"postgresql://{user}:{password}@{host}:{port}/{name}"
+        logger.debug(
+            '{"event": "vault_db_connect", "role": "%s", "host": "%s", "port": "%s", "db": "%s"}',
+            vault_role, host, port, name,
+        )
     else:
         url = os.environ.get("DATABASE_URL")
         if not url:
