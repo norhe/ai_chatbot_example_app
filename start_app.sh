@@ -41,30 +41,31 @@ PAYMENT_READ_SERVICE_PORT="${PAYMENT_READ_SERVICE_PORT:-5103}"
 PAYMENT_WRITE_SERVICE_PORT="${PAYMENT_WRITE_SERVICE_PORT:-5104}"
 
 # ---------------------------------------------------------------------------
-# Helper: load a .env file into the environment for a subshell launch
+# Helper: launch a service and store its PID in the named variable.
+# Uses a bash nameref so the PID is set in the caller's scope without
+# a subshell (which would make the process a grandchild and break the
+# Ctrl-C trap).
 # ---------------------------------------------------------------------------
 _launch_service() {
     local service_name="$1"
     local script_path="$2"
     local port_var="$3"
-    local creds_file="vault_approle_creds/${service_name}.env"
+    local -n _pid_ref="$4"
+    local creds_file="scripts/vault_approle_creds/${service_name}.env"
 
     if [[ ! -f "${creds_file}" ]]; then
         echo "WARNING: ${creds_file} not found — ${service_name} will fall back to DATABASE_URL." >&2
         python3 "${script_path}" &
     else
-        # Source the creds file into a subshell so vars are scoped to this process
-        (
-            # shellcheck source=/dev/null
-            set -a
-            source "${creds_file}"
-            set +a
-            export VAULT_ADDR DB_HOST DB_PORT DB_NAME DATABASE_URL
-            export "${port_var}"
-            exec python3 "${script_path}"
-        ) &
+        # shellcheck source=/dev/null
+        set -a
+        source "${creds_file}"
+        set +a
+        export VAULT_ADDR DB_HOST DB_PORT DB_NAME DATABASE_URL
+        export "${port_var}"
+        python3 "${script_path}" &
     fi
-    echo $!
+    _pid_ref=$!
 }
 
 # ---------------------------------------------------------------------------
@@ -87,17 +88,10 @@ PAYMENT_WRITE_PID=""
 python3 app.py &
 ORCHESTRATOR_PID=$!
 
-READ_SERVICE_PORT="${READ_SERVICE_PORT}" \
-READ_PID=$(_launch_service "read_service" "agents/read_service.py" "READ_SERVICE_PORT=${READ_SERVICE_PORT}")
-
-BOOKING_SERVICE_PORT="${BOOKING_SERVICE_PORT}" \
-BOOKING_PID=$(_launch_service "booking_mutation_service" "agents/booking_mutation_service.py" "BOOKING_SERVICE_PORT=${BOOKING_SERVICE_PORT}")
-
-PAYMENT_READ_SERVICE_PORT="${PAYMENT_READ_SERVICE_PORT}" \
-PAYMENT_READ_PID=$(_launch_service "payment_read_service" "agents/payment_read_service.py" "PAYMENT_READ_SERVICE_PORT=${PAYMENT_READ_SERVICE_PORT}")
-
-PAYMENT_WRITE_SERVICE_PORT="${PAYMENT_WRITE_SERVICE_PORT}" \
-PAYMENT_WRITE_PID=$(_launch_service "payment_write_service" "agents/payment_write_service.py" "PAYMENT_WRITE_SERVICE_PORT=${PAYMENT_WRITE_SERVICE_PORT}")
+_launch_service "read_service"             "agents/read_service.py"             "READ_SERVICE_PORT=${READ_SERVICE_PORT}"    READ_PID
+_launch_service "booking_mutation_service" "agents/booking_mutation_service.py" "BOOKING_SERVICE_PORT=${BOOKING_SERVICE_PORT}" BOOKING_PID
+_launch_service "payment_read_service"     "agents/payment_read_service.py"     "PAYMENT_READ_SERVICE_PORT=${PAYMENT_READ_SERVICE_PORT}" PAYMENT_READ_PID
+_launch_service "payment_write_service"    "agents/payment_write_service.py"    "PAYMENT_WRITE_SERVICE_PORT=${PAYMENT_WRITE_SERVICE_PORT}" PAYMENT_WRITE_PID
 
 echo ""
 echo " Orchestrator (app.py)         PID ${ORCHESTRATOR_PID}  → http://127.0.0.1:5000"
