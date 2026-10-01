@@ -24,38 +24,28 @@ ollama pull llama3.2:latest
 
 ### PostgreSQL
 
-PostgreSQL 14+ is required. The app connects via a `DATABASE_URL` environment variable and creates
+PostgreSQL is required. The app connects via a `DATABASE_URL` environment variable and creates
 its schema automatically on first start — no manual SQL needed.
 
-#### Run with Docker
+> **Handled automatically by [`scripts/setup_postgres.sh`](scripts/setup_postgres.sh)** when
+> using the full Agentic IAM setup (see [With Vault + Keycloak](#with-vault--keycloak-agentic-iam)
+> below). The manual commands are shown here for reference or standalone use.
 
-Data is stored in a local `./postgres-data` directory so it survives container restarts.
+The script uses `registry.redhat.io/rhel9/postgresql-16:latest` and binds the data volume to
+`./postgres-data` so it survives container restarts.
 
-```bash
-mkdir -p ./postgres-data
-
-docker run -d \
-  --name voyager-postgres \
-  -e POSTGRES_USER=voyager \
-  -e POSTGRES_PASSWORD=voyager \
-  -e POSTGRES_DB=voyager \
-  -p 127.0.0.1:5432:5432 \
-  -v "$(pwd)/postgres-data:/var/lib/postgresql" \
-  postgres:latest
-```
-
-#### Run with Podman
+#### Run with Podman (manual / standalone)
 
 ```bash
 mkdir -p ./postgres-data
 
 podman run -d \
   --name voyager-postgres \
-  -e POSTGRES_USER=voyager \
-  -e POSTGRES_PASSWORD=voyager \
-  -e POSTGRES_DB=voyager \
+  -e POSTGRESQL_USER=voyager \
+  -e POSTGRESQL_PASSWORD=voyager \
+  -e POSTGRESQL_DATABASE=voyager \
   -p 127.0.0.1:5432:5432 \
-  -v "$(pwd)/postgres-data:/var/lib/postgresql:Z" \
+  -v "$(pwd)/postgres-data:/var/lib/pgsql/data:Z" \
   postgres:latest
 ```
 
@@ -65,11 +55,6 @@ podman run -d \
 #### Stop / restart
 
 ```bash
-# Docker
-docker stop voyager-postgres
-docker start voyager-postgres
-
-# Podman
 podman stop voyager-postgres
 podman start voyager-postgres
 ```
@@ -77,10 +62,31 @@ podman start voyager-postgres
 #### Connect to the database (after the application has run at least once to seed the db)
 
 ```bash
-# Podman
 podman exec -it voyager-postgres psql -U voyager -d voyager
-
 ```
+
+### Keycloak
+
+Keycloak is required for the Agentic IAM path. It runs in Podman and acts as the OIDC/JWT
+identity provider for all four agent microservices.
+
+> **Handled automatically by [`scripts/setup_keycloak_kcadm.sh`](scripts/setup_keycloak_kcadm.sh)**
+> and [`scripts/keycloak_ai_vault_integration.sh`](scripts/keycloak_ai_vault_integration.sh) when
+> using `scripts/setup_all.sh`. The manual command is shown here for reference.
+
+```bash
+# Start Keycloak in dev mode (manual / standalone)
+podman run -d \
+  --name voyager-keycloak \
+  -p 127.0.0.1:8080:8080 \
+  -e KEYCLOAK_ADMIN=admin \
+  -e KEYCLOAK_ADMIN_PASSWORD=admin \
+  quay.io/keycloak/keycloak \
+  start-dev
+```
+
+The setup scripts configure a `voyager` realm with four confidential service-account clients
+(one per microservice) and a `vault-oidc` client with an audience mapper used by Vault.
 
 ## Quick start
 
@@ -115,7 +121,7 @@ To stop the agent services when you're done:
 # 1. Install dependencies
 uv sync
 
-# 2. Set environment — DATABASE_URL is used by setup_vault.sh to configure the
+# 2. Set environment — DATABASE_URL is used by scripts/setup_vault.sh to configure the
 #    Vault database connection and by db.py for schema init
 export DATABASE_URL="postgresql://voyager:voyager@127.0.0.1:5432/voyager"
 export VAULT_ADDR="http://127.0.0.1:8200"
@@ -128,12 +134,56 @@ vault server -dev
 uv run python db.py
 
 # 5. Configure Vault — enables database engine, creates roles, policies,
-#    and writes vault_approle_creds/<service>.env for each microservice
-./setup_vault.sh
+#    and writes scripts/vault_approle_creds/<service>.env for each microservice
+./scripts/setup_vault.sh
 
 # 6. Start all five processes (orchestrator + 4 services) with Vault creds
 ./start_app.sh
 ```
+
+Then open **http://127.0.0.1:5000** in your browser.
+
+### With Vault + Keycloak (Agentic IAM)
+
+This path adds a Keycloak OIDC layer and wires Vault's OAuth Resource Server profile and
+agent registry on top of the AppRole base. `scripts/setup_all.sh` runs all six setup steps
+in the correct order.
+
+**Prerequisites:** `podman`, `vault`, `jq`, and `curl` on `PATH`; a running Vault dev server.
+
+```bash
+# 1. Install dependencies
+uv sync
+
+# 2. Set environment
+export DATABASE_URL="postgresql://voyager:voyager@127.0.0.1:5432/voyager"
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN="<your-vault-dev-root-token>"
+export KEYCLOAK_ADMIN_PASSWORD="admin"   # default; change if desired
+
+# 3. Start Vault in dev mode (separate terminal)
+vault server -dev
+
+# 4. Initialise the database (first run only)
+uv run python db.py
+
+# 5. Run the full infrastructure setup (idempotent — safe to re-run)
+./scripts/setup_all.sh
+
+# 6. Start all five processes with Vault AppRole credentials
+./start_app.sh
+```
+
+`setup_all.sh` runs these six scripts in order — each is also safe to run standalone:
+
+| Step | Script | What it does |
+|------|--------|--------------|
+| 1 | `scripts/setup_postgres.sh` | Start PostgreSQL container, wait for readiness |
+| 2 | `scripts/setup_keycloak_kcadm.sh` | Start Keycloak, create `voyager` realm and four service-account clients |
+| 3 | `scripts/keycloak_ai_vault_integration.sh` | Add `vault-oidc` client and audience mapper to the `voyager` realm |
+| 4 | `scripts/setup_vault.sh` | Enable DB secrets engine, create roles, policies, AppRole credentials |
+| 5 | `scripts/vault_agentic_keycloak_setup.sh` | Write Vault OAuth Resource Server profile and ceiling policy |
+| 6 | `scripts/vault_register_agents.sh` | Register each service agent (Identity entity, alias, agent registry) |
 
 Then open **http://127.0.0.1:5000** in your browser.
 
@@ -165,6 +215,14 @@ All options are controlled via environment variables:
 | `DB_HOST`          | *(parsed by start_app.sh)* | PostgreSQL host — parsed from `DATABASE_URL` at launch   |
 | `DB_PORT`          | *(parsed by start_app.sh)* | PostgreSQL port — parsed from `DATABASE_URL` at launch   |
 | `DB_NAME`          | *(parsed by start_app.sh)* | PostgreSQL database name — parsed from `DATABASE_URL`    |
+
+**Keycloak env vars** (required only when running the Agentic IAM setup):
+
+| Variable                   | Default                   | Description                                              |
+|----------------------------|---------------------------|----------------------------------------------------------|
+| `KEYCLOAK_BASE_URL`        | `http://127.0.0.1:8080`   | Keycloak base URL (used by setup scripts and services)   |
+| `KEYCLOAK_ADMIN`           | `admin`                   | Keycloak admin username                                  |
+| `KEYCLOAK_ADMIN_PASSWORD`  | `admin`                   | Keycloak admin password — read from env, never hardcoded |
 
 ## Debugging
 
@@ -292,19 +350,19 @@ def validate_token(token: str) -> bool:
 
 ## Vault secret management
 
-The project demonstrates two approaches to database credential management.
-The **current implementation** uses the legacy Vault AppRole + database secrets engine
-pattern. The **planned next phase** adopts Vault 2.1's new Agentic AI primitives.
+The project demonstrates two layers of database credential management, both implemented and
+runnable today.
 
-### Current: Legacy AppRole (implemented)
+### Layer 1: AppRole + dynamic DB credentials
 
 Each microservice authenticates to Vault at startup using a pre-generated `role_id` /
-`secret_id` pair (written to `vault_approle_creds/<service>.env` by `setup_vault.sh`).
+`secret_id` pair (written to `scripts/vault_approle_creds/<service>.env` by
+[`scripts/setup_vault.sh`](scripts/setup_vault.sh)).
 On every `db.get_connection()` call the service requests a fresh, short-lived PostgreSQL
 credential pair from Vault's database secrets engine. The Vault token is kept alive by a
 background renewal thread in [`agents/vault_helper.py`](agents/vault_helper.py).
 
-**Relevant files:** `setup_vault.sh`, `agents/vault_helper.py`, `db.py`, `start_app.sh`
+**Relevant files:** `scripts/setup_vault.sh`, `agents/vault_helper.py`, `db.py`, `start_app.sh`
 
 Permission boundaries are enforced at the **PostgreSQL role level**:
 
@@ -315,23 +373,32 @@ Permission boundaries are enforced at the **PostgreSQL role level**:
 | `payment_read_service` | `voyager_payment_read` | SELECT on payment_cards |
 | `payment_write_service` | `voyager_payment_write` | SELECT, INSERT, UPDATE, DELETE on payment_cards |
 
-### Planned: Vault 2.1 Agentic AI (not yet implemented)
+### Layer 2: Keycloak OIDC + Vault Agentic IAM
 
-Vault 2.1 introduces purpose-built primitives for AI agent workloads:
+Built on top of Layer 1, this layer adds a Keycloak identity layer and wires Vault's OAuth
+Resource Server and agent registry so that each service proves its identity via a
+short-lived JWT rather than a pre-distributed `secret_id`.
 
-- **Workload Identity Federation (WIF)** — agents prove identity via a signed JWT generated
-  at runtime, eliminating pre-distributed credential files entirely
-- **`auth/agent/` auth method** — a new Vault auth method that accepts WIF tokens and issues
-  narrowly-scoped Vault tokens with tool-call policy enforcement built in
-- **Tool-call policies** — Vault policies that list the *named tools* an agent is permitted
-  to invoke, not just the secrets paths it can read
+**Relevant scripts:** `scripts/setup_keycloak_kcadm.sh`, `scripts/keycloak_ai_vault_integration.sh`,
+`scripts/vault_agentic_keycloak_setup.sh`, `scripts/vault_register_agents.sh`
 
-This shifts the permission boundary from the PostgreSQL role level to the **individual tool
-level**: Vault can deny `cancel_booking` to a service that is only authorised for
-`list_bookings`, before any database credential is issued.
+Key components configured by the scripts:
+
+- **Keycloak `voyager` realm** — four confidential service-account clients (one per
+  microservice) plus a `vault-oidc` client with an audience mapper pointed at Vault
+- **Vault OAuth Resource Server profile** (`keycloak`) — tells Vault to validate tokens
+  against Keycloak's JWKS endpoint with `jwt_type=access_token`
+- **Ceiling policy** (`voyager-agent-ceiling`) — upper bound on all permissions any
+  registered agent may ever exercise; scoped to the four `database/creds/*` paths
+- **Agent registry entries** — one per service, each linking a Vault Identity entity
+  (keyed on the Keycloak `sub` claim) to the ceiling policy
+
+This shifts the permission boundary from the PostgreSQL role level toward the
+**individual agent identity level**: Vault resolves the agent's Keycloak identity before
+issuing any database credential.
 
 See **[`vault-agentic-ai-plan.md`](vault-agentic-ai-plan.md)** for the full architecture
-comparison, a side-by-side differences table, and the planned sub-tasks.
+comparison and sub-task breakdown.
 
 ---
 
@@ -352,16 +419,24 @@ services/
   stop_services.sh                      ← Stop all 4 agent services
   logs/                                 ← Per-service stdout/stderr logs (gitignored)
   pids/                                 ← Per-service PID files (gitignored)
+scripts/
+  setup_all.sh                          ← One-shot orchestrator: runs all 6 setup steps in order
+  setup_postgres.sh                     ← Start PostgreSQL container, wait for readiness
+  setup_keycloak_kcadm.sh              ← Start Keycloak, create voyager realm + service-account clients
+  keycloak_ai_vault_integration.sh     ← Add vault-oidc client + audience mapper to voyager realm
+  setup_vault.sh                        ← DB secrets engine, roles, policies, AppRole credentials
+  vault_agentic_keycloak_setup.sh      ← Vault OAuth Resource Server profile + ceiling policy
+  vault_register_agents.sh             ← Per-agent Identity entity, alias, and registry entry
+  vault_approle_creds/                  ← Per-service AppRole .env files (gitignored, written by setup_vault.sh)
 static/
   index.html                            ← Single-page chat UI with bookings sidebar (vanilla JS)
-setup_vault.sh                          ← One-shot Vault config: DB engine, roles, policies, AppRole creds
 start_app.sh                            ← Launch all 5 processes with Vault AppRole credentials
-vault_approle_creds/                    ← Per-service AppRole .env files (gitignored, written by setup_vault.sh)
 pyproject.toml                          ← Project metadata and dependencies (uv)
 uv.lock                                 ← Pinned dependency lockfile
 .python-version                         ← Python version pin (3.12)
 vault-integration-plan.md              ← Plan: legacy AppRole + DB secrets engine (complete)
-vault-agentic-ai-plan.md               ← Plan: Vault 2.1 Agentic AI migration (pending)
+vault-agentic-ai-plan.md               ← Plan: Vault 2.1 Agentic AI migration
+keycloak-vault-oidc-plan.md            ← Plan: Keycloak OIDC + Vault Agentic IAM (complete)
 ```
 
 ## API
