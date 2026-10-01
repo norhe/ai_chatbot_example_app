@@ -50,7 +50,7 @@ echo "==> Configuring voyager-postgres database connection..."
 vault write database/config/voyager-postgres \
     plugin_name=postgresql-database-plugin \
     connection_url="${DATABASE_URL}" \
-    allowed_roles="voyager_read,voyager_booking_write,voyager_payment_read,voyager_payment_write"
+    allowed_roles="voyager_booking_read,voyager_booking_write,voyager_payment_read,voyager_payment_write"
 echo "    voyager-postgres connection configured."
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ echo "    voyager-postgres connection configured."
 echo ""
 echo "==> Writing database roles..."
 
-vault write database/roles/voyager_read \
+vault write database/roles/voyager_booking_read \
     db_name=voyager-postgres \
     default_ttl=1h \
     max_ttl=24h \
@@ -91,8 +91,8 @@ echo "    Four database roles written."
 echo ""
 echo "==> Writing Vault policies..."
 
-vault policy write voyager-read-policy - <<'EOF'
-path "database/creds/voyager_read" {
+vault policy write voyager-booking-read-policy - <<'EOF'
+path "database/creds/voyager_booking_read" {
   capabilities = ["read"]
 }
 EOF
@@ -163,7 +163,7 @@ _write_approle_creds() {
     echo "    ${creds_file} written."
 }
 
-_write_approle_creds "voyager-read"           "voyager-read-policy"          "read_service"
+_write_approle_creds "voyager-booking-read"   "voyager-booking-read-policy"  "booking_read_service"
 _write_approle_creds "voyager-booking-write"  "voyager-booking-write-policy" "booking_mutation_service"
 _write_approle_creds "voyager-payment-read"   "voyager-payment-read-policy"  "payment_read_service"
 _write_approle_creds "voyager-payment-write"  "voyager-payment-write-policy" "payment_write_service"

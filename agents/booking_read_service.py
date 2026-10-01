@@ -88,9 +88,9 @@ def _init_vault() -> None:
 
     client = vault_approle_login(role_id, secret_id)
     os.environ["VAULT_TOKEN"]   = client.token
-    os.environ["VAULT_DB_ROLE"] = "voyager_read"
+    os.environ["VAULT_DB_ROLE"] = "voyager_booking_read"
     start_token_renewal(client, logger)
-    logger.info('{"event": "vault_init_complete", "db_role": "voyager_read"}')
+    logger.info('{"event": "vault_init_complete", "db_role": "voyager_booking_read"}')
 
 
 if __name__ == "__main__":

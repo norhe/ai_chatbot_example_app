@@ -121,7 +121,7 @@ vault policy write "${CEILING_POLICY_NAME}" - <<'EOF'
 # regardless of what the JWT authorization_details claim requests.
 
 # Read-only database credentials (voyager read service)
-path "database/creds/voyager_read" {
+path "database/creds/voyager_booking_read" {
   capabilities = ["read"]
 }
 

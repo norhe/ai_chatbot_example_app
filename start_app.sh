@@ -35,8 +35,8 @@ print('export DB_NAME=' + u.path.lstrip('/'))"
 # ---------------------------------------------------------------------------
 # Ports
 # ---------------------------------------------------------------------------
-READ_SERVICE_PORT="${READ_SERVICE_PORT:-5101}"
-BOOKING_SERVICE_PORT="${BOOKING_SERVICE_PORT:-5102}"
+BOOKING_READ_SERVICE_PORT="${BOOKING_READ_SERVICE_PORT:-5101}"
+BOOKING_WRITE_SERVICE_PORT="${BOOKING_WRITE_SERVICE_PORT:-5102}"
 PAYMENT_READ_SERVICE_PORT="${PAYMENT_READ_SERVICE_PORT:-5103}"
 PAYMENT_WRITE_SERVICE_PORT="${PAYMENT_WRITE_SERVICE_PORT:-5104}"
 
@@ -79,8 +79,8 @@ echo " Database host:    ${DB_HOST}:${DB_PORT}/${DB_NAME}"
 echo "============================================================"
 
 ORCHESTRATOR_PID=""
-READ_PID=""
-BOOKING_PID=""
+BOOKING_READ_PID=""
+BOOKING_WRITE_PID=""
 PAYMENT_READ_PID=""
 PAYMENT_WRITE_PID=""
 
@@ -88,15 +88,15 @@ PAYMENT_WRITE_PID=""
 python3 app.py &
 ORCHESTRATOR_PID=$!
 
-_launch_service "read_service"             "agents/read_service.py"             "READ_SERVICE_PORT=${READ_SERVICE_PORT}"    READ_PID
-_launch_service "booking_mutation_service" "agents/booking_mutation_service.py" "BOOKING_SERVICE_PORT=${BOOKING_SERVICE_PORT}" BOOKING_PID
+_launch_service "booking_read_service"     "agents/booking_read_service.py"     "BOOKING_READ_SERVICE_PORT=${BOOKING_READ_SERVICE_PORT}"    BOOKING_READ_PID
+_launch_service "booking_mutation_service" "agents/booking_mutation_service.py" "BOOKING_WRITE_SERVICE_PORT=${BOOKING_WRITE_SERVICE_PORT}" BOOKING_WRITE_PID
 _launch_service "payment_read_service"     "agents/payment_read_service.py"     "PAYMENT_READ_SERVICE_PORT=${PAYMENT_READ_SERVICE_PORT}" PAYMENT_READ_PID
 _launch_service "payment_write_service"    "agents/payment_write_service.py"    "PAYMENT_WRITE_SERVICE_PORT=${PAYMENT_WRITE_SERVICE_PORT}" PAYMENT_WRITE_PID
 
 echo ""
 echo " Orchestrator (app.py)         PID ${ORCHESTRATOR_PID}  → http://127.0.0.1:5000"
-echo " read_service                  PID ${READ_PID}   → http://127.0.0.1:${READ_SERVICE_PORT}"
-echo " booking_mutation_service      PID ${BOOKING_PID}   → http://127.0.0.1:${BOOKING_SERVICE_PORT}"
+echo " booking_read_service          PID ${BOOKING_READ_PID}   → http://127.0.0.1:${BOOKING_READ_SERVICE_PORT}"
+echo " booking_mutation_service      PID ${BOOKING_WRITE_PID}   → http://127.0.0.1:${BOOKING_WRITE_SERVICE_PORT}"
 echo " payment_read_service          PID ${PAYMENT_READ_PID}   → http://127.0.0.1:${PAYMENT_READ_SERVICE_PORT}"
 echo " payment_write_service         PID ${PAYMENT_WRITE_PID}   → http://127.0.0.1:${PAYMENT_WRITE_SERVICE_PORT}"
 echo "============================================================"
@@ -109,7 +109,7 @@ echo ""
 _shutdown() {
     echo ""
     echo "==> Shutting down all services..."
-    for pid in "${ORCHESTRATOR_PID}" "${READ_PID}" "${BOOKING_PID}" "${PAYMENT_READ_PID}" "${PAYMENT_WRITE_PID}"; do
+    for pid in "${ORCHESTRATOR_PID}" "${BOOKING_READ_PID}" "${BOOKING_WRITE_PID}" "${PAYMENT_READ_PID}" "${PAYMENT_WRITE_PID}"; do
         if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
             kill "${pid}" 2>/dev/null || true
         fi

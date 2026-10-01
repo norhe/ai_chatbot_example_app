@@ -95,11 +95,11 @@ echo "    kcadm authenticated."
 # _register_agent <keycloak_client_id> <entity_name> <display_name>
 #
 #   keycloak_client_id — the client ID in the voyager realm
-#                        (e.g. "voyager-read")
+#                        (e.g. "voyager-booking-read")
 #   entity_name        — Vault Identity entity name
-#                        (e.g. "voyager-read-agent")
+#                        (e.g. "voyager-booking-read-agent")
 #   display_name       — label shown in the agent registry
-#                        (e.g. "voyager-read-service-iam")
+#                        (e.g. "voyager-booking-read-service-iam")
 # ---------------------------------------------------------------------------
 _register_agent() {
     local kc_client_id="$1"
@@ -210,7 +210,7 @@ _register_agent() {
 #
 #   args: <keycloak_client_id>   <vault_entity_name>            <registry_display_name>
 # ---------------------------------------------------------------------------
-_register_agent "voyager-read"          "voyager-read-agent"           "voyager-read-service-iam"
+_register_agent "voyager-booking-read"  "voyager-booking-read-agent"   "voyager-booking-read-service-iam"
 _register_agent "voyager-booking-write" "voyager-booking-write-agent"  "voyager-booking-write-service-iam"
 _register_agent "voyager-payment-read"  "voyager-payment-read-agent"   "voyager-payment-read-service-iam"
 _register_agent "voyager-payment-write" "voyager-payment-write-agent"  "voyager-payment-write-service-iam"
@@ -226,7 +226,7 @@ echo " Realm   : ${ISSUER}"
 echo " Ceiling : ${CEILING_POLICY_NAME}"
 echo ""
 echo " Registered agents:"
-echo "   voyager-read-service-iam"
+echo "   voyager-booking-read-service-iam"
 echo "   voyager-booking-write-service-iam"
 echo "   voyager-payment-read-service-iam"
 echo "   voyager-payment-write-service-iam"
