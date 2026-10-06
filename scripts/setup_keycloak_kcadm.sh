@@ -137,9 +137,14 @@ echo "==> Creating 'voyager' realm..."
 if ${KCADM} get realms/voyager &>/dev/null; then
     echo "    Realm 'voyager' already exists — skipping."
 else
-    ${KCADM} create realms \
-        -s realm=voyager \
-        -s enabled=true
+    _realm_out=""
+    if ! _realm_out=$(${KCADM} create realms \
+            -s realm=voyager \
+            -s enabled=true 2>&1); then
+        echo "ERROR: Failed to create 'voyager' realm in Keycloak." >&2
+        echo "${_realm_out}" >&2
+        exit 1
+    fi
     echo "    Realm 'voyager' created."
 fi
 
@@ -153,42 +158,59 @@ _create_client() {
     echo "==> Configuring client '${client_id}'..."
 
     # Check if the client already exists
-    local existing
-    existing=$(${KCADM} get clients \
+    local existing _existing_raw
+    _existing_raw=$(${KCADM} get clients \
         --target-realm voyager \
         --query "clientId=${client_id}" \
         --fields id \
         --format csv \
-        --noquotes 2>/dev/null | head -1)
+        --noquotes 2>/dev/null) || true
+    existing=$(echo "${_existing_raw}" | head -1) || true
 
     local client_uuid
     if [[ -n "${existing}" ]]; then
         echo "    Client '${client_id}' already exists — updating secret only."
         client_uuid="${existing}"
     else
-        ${KCADM} create clients \
-            --target-realm voyager \
-            -s "clientId=${client_id}" \
-            -s enabled=true \
-            -s clientAuthenticatorType=client-secret \
-            -s serviceAccountsEnabled=true \
-            -s standardFlowEnabled=false \
-            -s directAccessGrantsEnabled=false \
-            -s publicClient=false
+        local _create_out
+        if ! _create_out=$(${KCADM} create clients \
+                --target-realm voyager \
+                -s "clientId=${client_id}" \
+                -s enabled=true \
+                -s clientAuthenticatorType=client-secret \
+                -s serviceAccountsEnabled=true \
+                -s standardFlowEnabled=false \
+                -s directAccessGrantsEnabled=false \
+                -s publicClient=false 2>&1); then
+            echo "ERROR: Failed to create Keycloak client '${client_id}'." >&2
+            echo "${_create_out}" >&2
+            return 1
+        fi
         echo "    Client '${client_id}' created."
 
-        client_uuid=$(${KCADM} get clients \
+        local _uuid_raw
+        _uuid_raw=$(${KCADM} get clients \
             --target-realm voyager \
             --query "clientId=${client_id}" \
             --fields id \
             --format csv \
-            --noquotes 2>/dev/null | head -1)
+            --noquotes 2>/dev/null) || true
+        client_uuid=$(echo "${_uuid_raw}" | head -1) || true
+        if [[ -z "${client_uuid}" ]]; then
+            echo "ERROR: Client '${client_id}' was created but UUID could not be retrieved." >&2
+            return 1
+        fi
     fi
 
     # Set deterministic client secret
-    ${KCADM} update "clients/${client_uuid}" \
-        --target-realm voyager \
-        -s "secret=${client_secret}"
+    local _secret_out
+    if ! _secret_out=$(${KCADM} update "clients/${client_uuid}" \
+            --target-realm voyager \
+            -s "secret=${client_secret}" 2>&1); then
+        echo "ERROR: Failed to set client secret for '${client_id}'." >&2
+        echo "${_secret_out}" >&2
+        return 1
+    fi
 
     echo "    Client secret set for '${client_id}'."
 }

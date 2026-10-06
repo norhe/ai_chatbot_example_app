@@ -16,7 +16,7 @@
 #   - podman, vault, jq, curl on PATH
 #   - VAULT_ADDR set (default: http://127.0.0.1:8200)
 #   - VAULT_TOKEN set to a Vault admin token
-#   - DATABASE_URL set (postgresql://user:pass@host:5432/dbname)
+#   - DATABASE_URL set (default: postgresql://voyager:voyager@127.0.0.1:5432/voyager)
 #   - KEYCLOAK_ADMIN_PASSWORD set (default: admin)
 #
 # Usage:
@@ -60,7 +60,7 @@ done
 
 : "${VAULT_ADDR:?ERROR: VAULT_ADDR is not set.  Example: export VAULT_ADDR=http://127.0.0.1:8200}"
 : "${VAULT_TOKEN:?ERROR: VAULT_TOKEN is not set.  Export a Vault admin token before running.}"
-: "${DATABASE_URL:?ERROR: DATABASE_URL is not set.  Example: export DATABASE_URL=postgresql://user:pass@host:5432/dbname}"
+DATABASE_URL="${DATABASE_URL:-postgresql://voyager:voyager@127.0.0.1:5432/voyager}"
 
 echo "    All pre-flight checks passed."
 

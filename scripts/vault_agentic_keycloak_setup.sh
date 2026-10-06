@@ -57,15 +57,21 @@ echo ""
 
 # ---------------------------------------------------------------------------
 # 2. Create the OAuth Resource Server profile
-#    - jwt_type: access_token  (validates tokens as access tokens, not ID tokens)
+#    - jwt_type: jwt  (Keycloak issues typ=JWT, not typ=at+JWT; "access_token" would reject these)
 #    - audiences: issuer URL   (valid URI per RFC 7519; matches Keycloak audience mapper)
 #    - PS256 preferred, RS256 as fallback (per Vault recommendation)
 # ---------------------------------------------------------------------------
 echo "==> Writing OAuth Resource Server profile '${OAUTH_PROFILE_NAME}'..."
 
-if vault read -format=json sys/config/oauth-resource-server/"${OAUTH_PROFILE_NAME}" &>/dev/null; then
-    echo "    Profile '${OAUTH_PROFILE_NAME}' already exists — skipping creation."
+_existing_profile=$(vault read -format=json \
+    sys/config/oauth-resource-server/"${OAUTH_PROFILE_NAME}" 2>/dev/null) || true
+_existing_issuer=$(echo "${_existing_profile}" | jq -r '.data.issuer_id // empty' 2>/dev/null) || true
+if [[ "${_existing_issuer}" == "${ISSUER}" ]]; then
+    echo "    Profile '${OAUTH_PROFILE_NAME}' already exists with correct issuer — skipping."
 else
+    if [[ -n "${_existing_issuer}" ]]; then
+        echo "    Profile exists but issuer_id is '${_existing_issuer}' — overwriting with '${ISSUER}'."
+    fi
     OAUTH_JSON=$(mktemp --suffix=.json)
     trap 'rm -f "${OAUTH_JSON}"' EXIT
 
@@ -86,9 +92,14 @@ else
 }
 EOF
 
-    vault write \
-        sys/config/oauth-resource-server/"${OAUTH_PROFILE_NAME}" \
-        @"${OAUTH_JSON}"
+    _write_out=""
+    if ! _write_out=$(vault write -format=json \
+            sys/config/oauth-resource-server/"${OAUTH_PROFILE_NAME}" \
+            @"${OAUTH_JSON}" 2>&1); then
+        echo "ERROR: Failed to write OAuth Resource Server profile '${OAUTH_PROFILE_NAME}'." >&2
+        echo "${_write_out}" >&2
+        exit 1
+    fi
 
     echo "    Profile '${OAUTH_PROFILE_NAME}' written."
 fi
@@ -98,7 +109,10 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Verifying OAuth Resource Server profile..."
-vault read sys/config/oauth-resource-server/"${OAUTH_PROFILE_NAME}"
+if ! vault read sys/config/oauth-resource-server/"${OAUTH_PROFILE_NAME}" 2>&1; then
+    echo "ERROR: Could not read back OAuth profile '${OAUTH_PROFILE_NAME}' — write may have failed." >&2
+    exit 1
+fi
 
 PROFILE_ID=$(vault read -format=json \
     sys/config/oauth-resource-server/"${OAUTH_PROFILE_NAME}" | \
@@ -114,7 +128,8 @@ echo "    config_id: ${PROFILE_ID}"
 echo ""
 echo "==> Writing ceiling policy '${CEILING_POLICY_NAME}'..."
 
-vault policy write "${CEILING_POLICY_NAME}" - <<'EOF'
+_policy_out=""
+if ! _policy_out=$(vault policy write "${CEILING_POLICY_NAME}" - 2>&1 <<'EOF'
 # Ceiling policy for all voyager AI agents.
 # This is the upper bound on all permissions granted via the agent registry.
 # Tokens issued to any agent can never exceed the paths listed here,
@@ -150,6 +165,11 @@ path "auth/token/lookup-self" {
   capabilities = ["read"]
 }
 EOF
+); then
+    echo "ERROR: Failed to write ceiling policy '${CEILING_POLICY_NAME}'." >&2
+    echo "${_policy_out}" >&2
+    exit 1
+fi
 
 echo "    Ceiling policy '${CEILING_POLICY_NAME}' written."
 
@@ -163,7 +183,7 @@ echo "============================================================"
 echo " OAuth profile    : ${OAUTH_PROFILE_NAME}"
 echo "   issuer_id      : ${ISSUER}"
 echo "   jwks_uri       : ${JWKS_URI}"
-echo "   jwt_type       : access_token"
+echo "   jwt_type       : jwt"
 echo "   audiences      : ${ISSUER}"
 echo "   config_id      : ${PROFILE_ID}"
 echo ""

@@ -63,11 +63,17 @@ if podman container exists "${CONTAINER_NAME}" 2>/dev/null; then
             ;;
         paused)
             echo "    Container is paused — resuming."
-            podman unpause "${CONTAINER_NAME}"
+            if ! podman unpause "${CONTAINER_NAME}" 2>&1; then
+                echo "ERROR: Failed to unpause container '${CONTAINER_NAME}'." >&2
+                exit 1
+            fi
             ;;
         *)
             echo "    Container exists (status: ${STATUS:-unknown}) — starting it."
-            podman start "${CONTAINER_NAME}"
+            if ! podman start "${CONTAINER_NAME}" 2>&1; then
+                echo "ERROR: Failed to start container '${CONTAINER_NAME}'." >&2
+                exit 1
+            fi
             ;;
     esac
 else

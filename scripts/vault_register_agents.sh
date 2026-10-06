@@ -127,9 +127,16 @@ _register_agent() {
     fi
 
     local client_secret
-    client_secret=$(${KCADM} get \
-        "clients/${kc_client_uuid}/client-secret" \
-        -r "${REALM}" | jq -r '.value')
+    if ! client_secret=$(${KCADM} get \
+            "clients/${kc_client_uuid}/client-secret" \
+            -r "${REALM}" 2>&1 | jq -r '.value'); then
+        echo "ERROR: Failed to retrieve client secret for '${kc_client_id}'." >&2
+        return 1
+    fi
+    if [[ -z "${client_secret}" || "${client_secret}" == "null" ]]; then
+        echo "ERROR: Client secret for '${kc_client_id}' is empty or null." >&2
+        return 1
+    fi
 
     # 2. Fetch a client-credentials token and extract the sub claim
     local token_response
@@ -148,9 +155,9 @@ _register_agent() {
     fi
 
     local access_token subject
-    access_token=$(echo "${token_response}" | jq -r '.access_token')
+    access_token=$(echo "${token_response}" | jq -r '.access_token') || true
     subject=$(echo "${access_token}" | \
-        jq -R 'split(".")[1] | @base64d | fromjson | .sub' -r)
+        jq -R 'split(".")[1] | @base64d | fromjson | .sub' -r) || true
 
     echo "    sub claim  : ${subject}"
 
@@ -158,50 +165,113 @@ _register_agent() {
     if vault read -format=json identity/entity/name/"${entity_name}" &>/dev/null; then
         echo "    Entity '${entity_name}' already exists — skipping creation."
     else
-        vault write identity/entity \
-            name="${entity_name}" \
-            policies=default \
-            external_id="${subject}" \
-            &>/dev/null
+        local entity_write_out
+        if ! entity_write_out=$(vault write -format=json identity/entity \
+                name="${entity_name}" \
+                policies=default \
+                external_id="${subject}" \
+                2>&1); then
+            echo "ERROR: Failed to create Vault entity '${entity_name}'." >&2
+            echo "${entity_write_out}" >&2
+            return 1
+        fi
         echo "    Entity '${entity_name}' created."
     fi
 
-    local entity_id
-    entity_id=$(vault read -format=json \
-        identity/entity/name/"${entity_name}" | \
-        jq -r '.data.id')
+    local entity_id entity_read_out
+    if ! entity_read_out=$(vault read -format=json \
+            identity/entity/name/"${entity_name}" 2>&1); then
+        echo "ERROR: Failed to read entity '${entity_name}' after creation." >&2
+        echo "${entity_read_out}" >&2
+        return 1
+    fi
+    entity_id=$(echo "${entity_read_out}" | jq -r '.data.id') || true
     echo "    entity_id  : ${entity_id}"
 
-    # 4. Create the entity alias (issuer= lets Vault synthesize mount_accessor)
-    #    Vault deduplicates aliases by (canonical_id + mount_accessor + name),
-    #    so writing the same alias twice is idempotent.
-    vault write identity/entity-alias \
-        name="${subject}" \
-        canonical_id="${entity_id}" \
-        issuer="${ISSUER}" \
-        external_id="${subject}" \
-        &>/dev/null
-    echo "    Alias created (sub → entity)."
+    # 4. Create (or confirm) the entity alias
+    #    Uses the Agentic AI shorthand: supply issuer= and external_id= so Vault
+    #    synthesises the mount_accessor from the OAuth RS profile automatically —
+    #    no separate auth/jwt mount or accessor lookup required.
+    #      name=        human-readable alias label (need not match the sub)
+    #      canonical_id= the entity UUID created above
+    #      issuer=      must exactly match issuer_id in the OAuth RS profile
+    #      external_id= the JWT sub claim; Vault uses this to match tokens
+    #
+    # IMPORTANT: the issuer= field is mandatory — omitting it lets the write
+    #            succeed but causes silent auth failures at JWT lookup time.
+    local entity_aliases_json alias_name="${entity_name}-alias"
+    entity_aliases_json=$(vault read -format=json \
+        identity/entity/name/"${entity_name}" 2>/dev/null \
+        | jq -r '.data.aliases // []') || entity_aliases_json="[]"
+
+    # Find any existing alias by name on this entity.
+    local existing_alias_id existing_alias_external_id
+    existing_alias_id=$(echo "${entity_aliases_json}" \
+        | jq -r --arg n "${alias_name}" \
+            '.[] | select(.name == $n) | .id' \
+        | head -1) || existing_alias_id=""
+    existing_alias_external_id=$(echo "${entity_aliases_json}" \
+        | jq -r --arg n "${alias_name}" \
+            '.[] | select(.name == $n) | .external_id // ""' \
+        | head -1) || existing_alias_external_id=""
+
+    if [[ "${existing_alias_external_id}" == "${subject}" ]]; then
+        # Alias exists and is already wired to the correct sub — nothing to do.
+        echo "    Entity alias already exists (id: ${existing_alias_id}) — skipping."
+    else
+        if [[ -n "${existing_alias_id}" ]]; then
+            # Stale alias (wrong or missing external_id/issuer) — delete it first.
+            echo "    Stale alias found (id: ${existing_alias_id}, external_id='${existing_alias_external_id}') — replacing."
+            vault delete "identity/entity-alias/id/${existing_alias_id}" >/dev/null
+        fi
+
+        local alias_out alias_id
+        if ! alias_out=$(vault write -format=json identity/entity-alias \
+                name="${alias_name}" \
+                canonical_id="${entity_id}" \
+                issuer="${ISSUER}" \
+                external_id="${subject}" \
+                2>&1); then
+            echo "ERROR: Failed to create entity alias for '${entity_name}'." >&2
+            echo "${alias_out}" >&2
+            return 1
+        fi
+        alias_id=$(echo "${alias_out}" | jq -r '.data.id') || true
+        echo "    Entity alias created (id: ${alias_id})."
+    fi
 
     # 5. Register in the agent registry
-    vault write agent-registry/register \
+    local reg_out
+    if ! reg_out=$(vault write -format=json agent-registry/register \
         display_name="${display_name}" \
         entity_id="${entity_id}" \
         ceiling_policies="${CEILING_POLICY_NAME}" \
-        &>/dev/null
+        2>&1); then
+        echo "ERROR: Failed to register agent '${display_name}' in agent-registry." >&2
+        echo "${reg_out}" >&2
+        return 1
+    fi
     echo "    Agent registry entry written."
 
-    # 6. Validate: vault token lookup resolves the entity alias end-to-end
+    # 6. Validate: vault token lookup resolves the JWT via the OAuth RS profile.
+    #    Per the Agentic AI docs, when VAULT_TOKEN is a JWT Vault intercepts the
+    #    lookup-self call, validates the JWT against the OAuth RS profile, resolves
+    #    the entity alias created above, and returns the entity_id — same as a
+    #    native Vault token lookup.  A 403 here means the alias is still missing
+    #    or the issuer/external_id values don't match what the JWT contains.
     echo "    Validating token with vault token lookup..."
-    local lookup_entity_id
-    lookup_entity_id=$(VAULT_TOKEN="${access_token}" vault token lookup -format=json \
-        2>/dev/null | jq -r '.data.entity_id')
+    local lookup_out lookup_entity_id
+    lookup_out=$(VAULT_TOKEN="${access_token}" vault token lookup -format=json 2>&1) || true
+    lookup_entity_id=$(echo "${lookup_out}" | jq -r '.data.entity_id // empty' 2>/dev/null) || true
 
     if [[ "${lookup_entity_id}" == "${entity_id}" ]]; then
         echo "    ✔ Token resolves to entity_id ${entity_id}"
     else
         echo "WARNING: token lookup returned entity_id '${lookup_entity_id}'," >&2
         echo "         expected '${entity_id}'. Check alias and profile config." >&2
+        if [[ -n "${lookup_out}" ]]; then
+            echo "         vault token lookup output: ${lookup_out}" >&2
+        fi
     fi
 }
 
