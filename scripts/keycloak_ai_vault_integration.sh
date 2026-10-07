@@ -45,9 +45,12 @@ kcadm.sh create clients \
   -s clientId=vault-oidc \
   -s protocol=openid-connect \
   -s publicClient=false \
+  -s clientAuthenticatorType=client-secret \
   -s serviceAccountsEnabled=true \
   -s standardFlowEnabled=false \
-  -s directAccessGrantsEnabled=false || true
+  -s directAccessGrantsEnabled=false \
+  -s 'attributes."access.token.signed.response.alg"=RS256' \
+  -s 'attributes."access.token.header.type"=at+JWT' || true
 echo "    Client ready."
 
 echo "==> Retrieving client ID for 'vault-oidc'..."

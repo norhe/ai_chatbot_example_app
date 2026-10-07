@@ -154,8 +154,12 @@ _register_agent() {
         return 1
     fi
 
-    local access_token subject
+    local access_token subject token_out
     access_token=$(echo "${token_response}" | jq -r '.access_token') || true
+
+    token_out=$(jq -R 'split(".") | .[0],.[1] | @base64d | fromjson' <<< $access_token)
+    echo $token_out | jq
+
     subject=$(echo "${access_token}" | \
         jq -R 'split(".")[1] | @base64d | fromjson | .sub' -r) || true
 

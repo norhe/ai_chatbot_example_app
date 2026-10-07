@@ -181,7 +181,9 @@ _create_client() {
                 -s serviceAccountsEnabled=true \
                 -s standardFlowEnabled=false \
                 -s directAccessGrantsEnabled=false \
-                -s publicClient=false 2>&1); then
+                -s publicClient=false \
+                -s 'attributes."access.token.signed.response.alg"=RS256' \
+                -s 'attributes."access.token.header.type"=at+JWT' 2>&1); then
             echo "ERROR: Failed to create Keycloak client '${client_id}'." >&2
             echo "${_create_out}" >&2
             return 1

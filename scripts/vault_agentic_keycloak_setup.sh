@@ -57,7 +57,7 @@ echo ""
 
 # ---------------------------------------------------------------------------
 # 2. Create the OAuth Resource Server profile
-#    - jwt_type: jwt  (Keycloak issues typ=JWT, not typ=at+JWT; "access_token" would reject these)
+#    - jwt_type: access_token  (RFC 9068 — clients emit typ=at+JWT via access.token.header.type)
 #    - audiences: issuer URL   (valid URI per RFC 7519; matches Keycloak audience mapper)
 #    - PS256 preferred, RS256 as fallback (per Vault recommendation)
 # ---------------------------------------------------------------------------
