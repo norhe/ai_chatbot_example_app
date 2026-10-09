@@ -25,10 +25,7 @@ export VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}"
 # Parse DB_HOST / DB_PORT / DB_NAME from DATABASE_URL
 # e.g. postgresql://user:pass@localhost:5432/voyager
 # ---------------------------------------------------------------------------
-if [[ -z "${DATABASE_URL:-}" ]]; then
-    echo "ERROR: DATABASE_URL is not set." >&2
-    exit 1
-fi
+DATABASE_URL="${DATABASE_URL:-postgresql://voyager:voyager@127.0.0.1:5432/voyager}"
 
 eval "$(python3 -c "
 from urllib.parse import urlparse

@@ -338,8 +338,7 @@ _create_demo_user() {
         if ! _pass_out=$(${KCADM} set-password \
                 --target-realm voyager \
                 --username "${username}" \
-                --new-password "voyager123" \
-                --temporary false 2>&1); then
+                --new-password "voyager123" 2>&1); then
             echo "ERROR: Failed to set password for '${username}'." >&2
             echo "${_pass_out}" >&2
             exit 1
