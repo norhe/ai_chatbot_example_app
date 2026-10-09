@@ -3,11 +3,12 @@ import json
 import logging
 import requests
 from datetime import date
-from flask import Flask, request, jsonify, Response, stream_with_context
+from flask import Flask, g, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 
 import db
 import tools
+from auth_helper import require_role
 
 _LOG_LEVEL = logging.DEBUG if os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes") else logging.INFO
 logging.basicConfig(
@@ -144,6 +145,9 @@ def chat():
                 messages.append(assistant_message)
 
                 # Dispatch each tool call and append the results
+                # Extract bearer token to forward to agent services
+                bearer_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
                 for call in tool_calls:
                     fn = call["function"]
                     name = fn["name"]
@@ -151,7 +155,7 @@ def chat():
                     if isinstance(args, str):
                         args = json.loads(args)
                     logger.debug("Dispatching tool: name=%s args=%s", name, json.dumps(args))
-                    result = tools.dispatch_tool(name, args)
+                    result = tools.dispatch_tool(name, args, token=bearer_token)
                     logger.info("Tool dispatched: name=%s result_keys=%s", name, list(result.keys()))
                     logger.debug("Tool result: %s", json.dumps(result))
                     messages.append({
@@ -212,14 +216,20 @@ def chat():
 
 
 @app.route("/api/bookings", methods=["GET"])
+@require_role("admin", "bookings_admin", "user")
 def get_bookings():
-    bookings = db.list_bookings()
+    current_user = g.current_user
+    user_id = current_user["user_id"] if current_user["role"] == "user" else None
+    bookings = db.list_bookings(user_id=user_id)
     return jsonify({"bookings": bookings})
 
 
 @app.route("/api/payment-cards", methods=["GET"])
+@require_role("admin", "payments_admin", "user")
 def get_payment_cards():
-    cards = db.list_payment_cards()
+    current_user = g.current_user
+    user_id = current_user["user_id"] if current_user["role"] == "user" else None
+    cards = db.list_payment_cards(user_id=user_id)
     return jsonify({"cards": cards})
 
 

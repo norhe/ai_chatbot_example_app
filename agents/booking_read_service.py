@@ -1,7 +1,8 @@
 import logging, os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
+from auth_helper import require_role, validate_and_identify
 from vault_helper import vault_approle_login, start_token_renewal
 
 _debug = os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes")
@@ -14,24 +15,17 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 
-def validate_token(token: str) -> bool:
-    # TODO: replace with external auth service call
-    # e.g. return requests.post(AUTH_SERVICE_URL, json={"token": token}).json()["valid"]
-    logger.debug("validate_token: token=%r", token)
-    return True
-
-
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "read_service"})
 
 
 @app.route("/execute", methods=["POST"])
+@require_role("user", "bookings_admin", "admin")
 def execute():
-    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    if not validate_token(token):
-        logger.warning("Auth failed for token=%r", token)
-        return jsonify({"error": "Unauthorized"}), 401
+    current_user = g.current_user
+    role = current_user["role"]
+    user_id = current_user["user_id"] if role == "user" else None
 
     data = request.get_json(silent=True)
     if not data or "tool" not in data:
@@ -43,26 +37,26 @@ def execute():
 
     if tool == "get_booking":
         reference = args.get("reference")
-        logger.debug("Calling db.get_booking reference=%r", reference)
+        logger.debug("Calling db.get_booking reference=%r user_id=%s", reference, user_id)
         try:
-            booking = db.get_booking(reference)
+            booking = db.get_booking(reference, user_id=user_id)
         except Exception as e:
             logger.exception("db.get_booking raised an exception")
-            return jsonify({"error": str(e)})
+            return jsonify({"error": "Internal server error"})
         logger.debug("get_booking returned: %s", json.dumps(booking))
         if booking is None:
-            logger.warning("get_booking: reference=%r not found", reference)
+            logger.warning("get_booking: reference=%r not found or not accessible", reference)
             return jsonify({"error": "Booking not found"})
         return jsonify({"result": booking})
 
     if tool == "list_bookings":
         passenger_name = args.get("passenger_name")
-        logger.debug("Calling db.list_bookings passenger_name=%r", passenger_name)
+        logger.debug("Calling db.list_bookings passenger_name=%r user_id=%s", passenger_name, user_id)
         try:
-            bookings = db.list_bookings(passenger_name=passenger_name)
+            bookings = db.list_bookings(passenger_name=passenger_name, user_id=user_id)
         except Exception as e:
             logger.exception("db.list_bookings raised an exception")
-            return jsonify({"error": str(e)})
+            return jsonify({"error": "Internal server error"})
         logger.debug("list_bookings returned %d rows", len(bookings))
         return jsonify({"result": bookings})
 

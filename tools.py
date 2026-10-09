@@ -217,8 +217,13 @@ TOOL_DEFINITIONS = [
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-def dispatch_tool(name: str, args: dict) -> dict:
+def dispatch_tool(name: str, args: dict, token: str = "") -> dict:
     """POST to the appropriate agent microservice and return its JSON result.
+
+    Args:
+        name:  Tool name to dispatch.
+        args:  Tool arguments dict.
+        token: Bearer token forwarded from the inbound user request.
 
     Always returns a plain dict:
       {"result": ...}  on success
@@ -229,7 +234,8 @@ def dispatch_tool(name: str, args: dict) -> dict:
         logger.error("dispatch_tool: no service URL for tool=%s", name)
         return {"error": f"Unknown tool: {name}"}
 
-    token = os.environ.get("AUTH_TOKEN", "dev-token")
+    if not token:
+        token = os.environ.get("AUTH_TOKEN", "")
     logger.debug("dispatch_tool: POST %s/execute tool=%s", base_url, name)
 
     try:

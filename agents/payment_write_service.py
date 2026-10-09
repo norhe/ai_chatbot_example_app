@@ -1,7 +1,8 @@
 import logging, os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
+from auth_helper import require_role
 from vault_helper import vault_approle_login, start_token_renewal
 
 _debug = os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes")
@@ -14,24 +15,17 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 
-def validate_token(token: str) -> bool:
-    # TODO: replace with external auth service call
-    # e.g. return requests.post(AUTH_SERVICE_URL, json={"token": token}).json()["valid"]
-    logger.debug("validate_token: token=%r", token)
-    return True
-
-
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "payment_write_service"})
 
 
 @app.route("/execute", methods=["POST"])
+@require_role("user", "payments_admin", "admin")
 def execute():
-    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    if not validate_token(token):
-        logger.warning("Auth failed for token=%r", token)
-        return jsonify({"error": "Unauthorized"}), 401
+    current_user = g.current_user
+    role = current_user["role"]
+    user_id = current_user["user_id"] if role == "user" else None
 
     data = request.get_json(silent=True)
     if not data or "tool" not in data:
@@ -42,7 +36,7 @@ def execute():
     logger.debug("tool=%s args=%s", tool, json.dumps(args))
 
     if tool == "add_payment_card":
-        logger.debug("Calling db.add_payment_card")
+        logger.debug("Calling db.add_payment_card user_id=%s", current_user["user_id"])
         try:
             card = db.add_payment_card(
                 cardholder_name=args["cardholder_name"],
@@ -50,10 +44,11 @@ def execute():
                 card_brand=args["card_brand"],
                 expiry=args["expiry"],
                 billing_address=args["billing_address"],
+                user_id=current_user["user_id"],  # always set user_id for new cards
             )
         except Exception as e:
             logger.exception("db.add_payment_card raised an exception")
-            return jsonify({"error": str(e)})
+            return jsonify({"error": "Internal server error"})
         logger.debug("add_payment_card result: %s", json.dumps(card))
         return jsonify({"result": card})
 
@@ -61,29 +56,30 @@ def execute():
         card_id = args["card_id"]
         updatable = {"cardholder_name", "card_number", "card_brand", "expiry", "billing_address"}
         fields = {k: v for k, v in args.items() if k in updatable}
-        logger.debug("Calling db.update_payment_card card_id=%s fields=%s", card_id, list(fields.keys()))
+        logger.debug("Calling db.update_payment_card card_id=%s user_id=%s fields=%s",
+                     card_id, user_id, list(fields.keys()))
         try:
-            card = db.update_payment_card(card_id, **fields)
+            card = db.update_payment_card(card_id, user_id=user_id, **fields)
         except Exception as e:
             logger.exception("db.update_payment_card raised an exception")
-            return jsonify({"error": str(e)})
+            return jsonify({"error": "Internal server error"})
         logger.debug("update_payment_card returned: %s", json.dumps(card))
         if card is None:
-            logger.warning("update_payment_card: card_id=%s not found", card_id)
+            logger.warning("update_payment_card: card_id=%s not found or not accessible", card_id)
             return jsonify({"error": "Card not found"})
         return jsonify({"result": card})
 
     if tool == "remove_payment_card":
         card_id = args["card_id"]
-        logger.debug("Calling db.remove_payment_card card_id=%s", card_id)
+        logger.debug("Calling db.remove_payment_card card_id=%s user_id=%s", card_id, user_id)
         try:
-            removed = db.remove_payment_card(card_id)
+            removed = db.remove_payment_card(card_id, user_id=user_id)
         except Exception as e:
             logger.exception("db.remove_payment_card raised an exception")
-            return jsonify({"error": str(e)})
+            return jsonify({"error": "Internal server error"})
         logger.debug("remove_payment_card returned: %s", removed)
         if not removed:
-            logger.warning("remove_payment_card: card_id=%s not found", card_id)
+            logger.warning("remove_payment_card: card_id=%s not found or not accessible", card_id)
             return jsonify({"error": "Card not found"})
         return jsonify({"result": "Card removed"})
 

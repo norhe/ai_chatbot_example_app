@@ -37,3 +37,8 @@ services/logs/
 
 # Vault AppRole credential files — never commit
 vault_approle_creds/
+
+# User id seed data
+demo_user_subs.env
+# Keycloak demo user sub UUIDs — auto-generated, never commit
+scripts/demo_user_subs.env

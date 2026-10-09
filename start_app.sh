@@ -11,6 +11,12 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# Keycloak auth configuration
+# ---------------------------------------------------------------------------
+export KEYCLOAK_BASE_URL="${KEYCLOAK_BASE_URL:-http://127.0.0.1:8080}"
+export KEYCLOAK_REALM="${KEYCLOAK_REALM:-voyager}"
+
+# ---------------------------------------------------------------------------
 # Vault address (default to local dev server)
 # ---------------------------------------------------------------------------
 export VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}"

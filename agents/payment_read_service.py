@@ -1,7 +1,8 @@
 import logging, os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
+from auth_helper import require_role
 from vault_helper import vault_approle_login, start_token_renewal
 
 _debug = os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes")
@@ -14,39 +15,32 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 
-def validate_token(token: str) -> bool:
-    # TODO: replace with external auth service call
-    # e.g. return requests.post(AUTH_SERVICE_URL, json={"token": token}).json()["valid"]
-    logger.debug("validate_token: token=%r", token)
-    return True
-
-
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "payment_read_service"})
 
 
 @app.route("/execute", methods=["POST"])
+@require_role("user", "payments_admin", "admin")
 def execute():
-    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    if not validate_token(token):
-        logger.warning("Auth failed for token=%r", token)
-        return jsonify({"error": "Unauthorized"}), 401
+    current_user = g.current_user
+    role = current_user["role"]
+    user_id = current_user["user_id"] if role == "user" else None
 
     data = request.get_json(silent=True)
     if not data or "tool" not in data:
         return jsonify({"error": "Invalid request: 'tool' field required"}), 400
 
     tool = data["tool"]
-    logger.debug("tool=%s", tool)
+    logger.debug("tool=%s user_id=%s", tool, user_id)
 
     if tool == "list_payment_cards":
-        logger.debug("Calling db.list_payment_cards")
+        logger.debug("Calling db.list_payment_cards user_id=%s", user_id)
         try:
-            cards = db.list_payment_cards()
+            cards = db.list_payment_cards(user_id=user_id)
         except Exception as e:
             logger.exception("db.list_payment_cards raised an exception")
-            return jsonify({"error": str(e)})
+            return jsonify({"error": "Internal server error"})
         logger.debug("list_payment_cards returned %d rows", len(cards))
         return jsonify({"result": cards})
 

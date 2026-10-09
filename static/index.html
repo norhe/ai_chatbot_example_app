@@ -503,6 +503,113 @@
 </div>
 
 <script>
+  // ── Keycloak PKCE config ─────────────────────────────────────────────────
+  const KC_BASE      = window._KEYCLOAK_BASE_URL || "http://127.0.0.1:8080";
+  const KC_REALM     = window._KEYCLOAK_REALM    || "voyager";
+  const KC_CLIENT_ID = "voyager-user";
+  const KC_REDIRECT  = window.location.origin + "/";
+
+  // ── Auth state ───────────────────────────────────────────────────────────
+
+  function _b64url(buf) {
+    return btoa(String.fromCharCode(...new Uint8Array(buf)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  async function _generatePKCE() {
+    const verifier = _b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const digest   = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+    return { verifier, challenge: _b64url(digest) };
+  }
+
+  function _getToken() {
+    const raw = sessionStorage.getItem("kc_token_data");
+    if (!raw) return null;
+    try {
+      const data = JSON.parse(raw);
+      if (Date.now() / 1000 > data.expires_at - 30) {
+        sessionStorage.removeItem("kc_token_data");
+        return null;
+      }
+      return data.access_token;
+    } catch { return null; }
+  }
+
+  function _storeToken(tokenResponse) {
+    const expiresAt = Math.floor(Date.now() / 1000) + (tokenResponse.expires_in || 300);
+    sessionStorage.setItem("kc_token_data", JSON.stringify({
+      access_token: tokenResponse.access_token,
+      expires_at:   expiresAt,
+    }));
+  }
+
+  async function _handleCallback() {
+    const params   = new URLSearchParams(window.location.search);
+    const code     = params.get("code");
+    const state    = params.get("state");
+    const storedState    = sessionStorage.getItem("kc_state");
+    const codeVerifier   = sessionStorage.getItem("kc_verifier");
+
+    if (!code || state !== storedState || !codeVerifier) return false;
+
+    // Clean the URL
+    history.replaceState({}, document.title, window.location.pathname);
+    sessionStorage.removeItem("kc_state");
+    sessionStorage.removeItem("kc_verifier");
+
+    const tokenUrl = `${KC_BASE}/realms/${KC_REALM}/protocol/openid-connect/token`;
+    const body = new URLSearchParams({
+      grant_type:    "authorization_code",
+      client_id:     KC_CLIENT_ID,
+      redirect_uri:  KC_REDIRECT,
+      code,
+      code_verifier: codeVerifier,
+    });
+
+    const resp = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!resp.ok) return false;
+    _storeToken(await resp.json());
+    return true;
+  }
+
+  async function _redirectToLogin() {
+    const { verifier, challenge } = await _generatePKCE();
+    const state = _b64url(crypto.getRandomValues(new Uint8Array(16)));
+    sessionStorage.setItem("kc_verifier", verifier);
+    sessionStorage.setItem("kc_state",    state);
+
+    const authUrl = new URL(`${KC_BASE}/realms/${KC_REALM}/protocol/openid-connect/auth`);
+    authUrl.searchParams.set("response_type",          "code");
+    authUrl.searchParams.set("client_id",              KC_CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri",           KC_REDIRECT);
+    authUrl.searchParams.set("scope",                  "openid profile");
+    authUrl.searchParams.set("state",                  state);
+    authUrl.searchParams.set("code_challenge",         challenge);
+    authUrl.searchParams.set("code_challenge_method",  "S256");
+    window.location.href = authUrl.toString();
+  }
+
+  // ── Initialise auth before anything else ────────────────────────────────
+
+  async function _initAuth() {
+    // Check for auth code callback first
+    if (window.location.search.includes("code=")) {
+      await _handleCallback();
+    }
+    const token = _getToken();
+    if (!token) {
+      await _redirectToLogin();
+      return false;
+    }
+    return true;
+  }
+
+  // ── DOM refs ─────────────────────────────────────────────────────────────
+
   const chatWindow     = document.getElementById("chat-window");
   const userInput      = document.getElementById("user-input");
   const sendBtn        = document.getElementById("send-btn");
@@ -557,6 +664,17 @@
     userInput.style.height = Math.min(userInput.scrollHeight, 160) + "px";
   }
 
+  // ── Authenticated fetch ──────────────────────────────────────────────────
+
+  async function authFetch(url, options = {}) {
+    const token = _getToken();
+    if (!token) { await _redirectToLogin(); return null; }
+    const headers = { ...(options.headers || {}), "Authorization": `Bearer ${token}` };
+    const resp = await fetch(url, { ...options, headers });
+    if (resp.status === 401) { sessionStorage.removeItem("kc_token_data"); await _redirectToLogin(); return null; }
+    return resp;
+  }
+
   // ── Load models ─────────────────────────────────────────────────────────────
 
   async function loadModels() {
@@ -583,7 +701,8 @@
   async function loadBookings() {
     const container = document.getElementById("tab-bookings");
     try {
-      const res  = await fetch("/api/bookings");
+      const res  = await authFetch("/api/bookings");
+      if (!res) return;
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load bookings");
       const bookings = data.bookings || [];
@@ -615,7 +734,8 @@
   async function loadCards() {
     const container = document.getElementById("tab-cards");
     try {
-      const res  = await fetch("/api/payment-cards");
+      const res  = await authFetch("/api/payment-cards");
+      if (!res) return;
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load cards");
       const cards = data.cards || [];
@@ -696,10 +816,16 @@
     // Show typing indicator
     const assistantBubble = showTyping();
 
+    const chatToken = _getToken();
+    if (!chatToken) { isStreaming = false; sendBtn.disabled = false; await _redirectToLogin(); return; }
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${chatToken}`,
+        },
         body: JSON.stringify({
           model: modelSelect.value,
           messages: conversationHistory,
@@ -788,9 +914,12 @@
   document.getElementById("refresh-btn").addEventListener("click", refreshSidebar);
 
   // ── Init ────────────────────────────────────────────────────────────────────
-  loadModels();
-  refreshSidebar();
-  userInput.focus();
+  _initAuth().then(ready => {
+    if (!ready) return;
+    loadModels();
+    refreshSidebar();
+    userInput.focus();
+  });
 </script>
 </body>
 </html>

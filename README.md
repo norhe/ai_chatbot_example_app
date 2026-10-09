@@ -86,7 +86,44 @@ podman run -d \
 ```
 
 The setup scripts configure a `voyager` realm with four confidential service-account clients
-(one per microservice) and a `vault-oidc` client with an audience mapper used by Vault.
+(one per microservice), a `voyager-user` public PKCE client for browser login, and a
+`vault-oidc` client with an audience mapper used by Vault.
+
+## Authentication & User Management
+
+All API endpoints (including the chat stream) now require a valid Keycloak JWT in the
+`Authorization: Bearer <token>` header. The browser UI handles this automatically via the
+`voyager-user` Keycloak client (Authorization Code + PKCE).
+
+### Roles
+
+| Role             | Bookings                      | Payment Cards                  |
+|------------------|-------------------------------|--------------------------------|
+| `admin`          | Read & write all              | Read & write all               |
+| `bookings_admin` | Read & write all              | No access (403)                |
+| `payments_admin` | No access (403)               | Read & write all               |
+| `user`           | Read & write own only         | Read & write own only          |
+
+### Demo Users
+
+All demo users have password **`voyager123`**.
+
+| Username       | Role             | Data visible                           |
+|----------------|------------------|----------------------------------------|
+| `alice`        | `user`           | Alice Johnson's bookings & card        |
+| `bob`          | `user`           | Bob Martinez's bookings & card         |
+| `carol`        | `user`           | Carol Williams's bookings & card       |
+| `david`        | `user`           | David Lee's bookings & card            |
+| `bookings_mgr` | `bookings_admin` | All bookings; no payment cards         |
+| `payments_mgr` | `payments_admin` | No bookings; all payment cards         |
+| `admin_user`   | `admin`          | All bookings and all payment cards     |
+
+### Login Flow
+
+On first page load the browser is redirected to Keycloak (`voyager-user` PKCE client).
+After login Keycloak redirects back to `http://127.0.0.1:5000/` with an auth code; the
+page exchanges it for an access token stored in `sessionStorage`. All subsequent API calls
+include `Authorization: Bearer <token>`. A 401 response triggers re-login automatically.
 
 ## Quick start
 
@@ -99,13 +136,21 @@ uv sync
 # 2. Set the database connection string
 export DATABASE_URL="postgresql://voyager:voyager@127.0.0.1:5432/voyager"
 
-# 3. Initialise the database and seed demo data (first run only)
+# 3. Set up Keycloak (realm roles, voyager-user client, demo users)
+./scripts/setup_keycloak_kcadm.sh
+
+# 4. Initialise the database and seed demo data (first run only)
 uv run python db.py
 
-# 4. Start the agent microservices
+# 5. (Optional) Patch demo user Keycloak sub UUIDs
+./scripts/seed_users.sh
+
+# 6. Start the agent microservices
 ./services/start_services.sh
 
-# 5. Run the orchestrator
+# 7. Run the orchestrator
+export KEYCLOAK_BASE_URL="http://127.0.0.1:8080"
+export KEYCLOAK_REALM="voyager"
 uv run python app.py
 ```
 
@@ -168,9 +213,13 @@ vault server -dev
 uv run python db.py
 
 # 5. Run the full infrastructure setup (idempotent — safe to re-run)
+#    This now also creates realm roles, voyager-user client, and demo users.
 ./scripts/setup_all.sh
 
-# 6. Start all five processes with Vault AppRole credentials
+# 6. Patch demo user Keycloak sub UUIDs into the database
+./scripts/seed_users.sh
+
+# 7. Start all five processes with Vault AppRole credentials
 ./start_app.sh
 ```
 
@@ -179,7 +228,7 @@ uv run python db.py
 | Step | Script | What it does |
 |------|--------|--------------|
 | 1 | `scripts/setup_postgres.sh` | Start PostgreSQL container, wait for readiness |
-| 2 | `scripts/setup_keycloak_kcadm.sh` | Start Keycloak, create `voyager` realm and four service-account clients |
+| 2 | `scripts/setup_keycloak_kcadm.sh` | Start Keycloak, create `voyager` realm, four service-account clients, realm roles, `voyager-user` PKCE client, and demo users |
 | 3 | `scripts/keycloak_ai_vault_integration.sh` | Add `vault-oidc` client and audience mapper to the `voyager` realm |
 | 4 | `scripts/setup_vault.sh` | Enable DB secrets engine, create roles, policies, AppRole credentials |
 | 5 | `scripts/vault_agentic_keycloak_setup.sh` | Write Vault OAuth Resource Server profile and ceiling policy |
@@ -197,7 +246,6 @@ All options are controlled via environment variables:
 | `OLLAMA_BASE_URL`     | `http://127.0.0.1:11434`  | Ollama API base URL                                                |
 | `OLLAMA_MODEL`        | `llama3.2:latest`          | Default model (overridable in UI)                                  |
 | `REQUEST_TIMEOUT`     | `120`                      | Seconds before streaming times out                                 |
-| `AUTH_TOKEN`          | `dev-token`                | Bearer token sent to each agent service for authorization          |
 | `AGENT_BASE_URL`      | `http://127.0.0.1`         | Base URL for all agent services (override for container deployments) |
 | `DEBUG`               | *(unset)*                  | Set to `1` to enable verbose debug logging                         |
 | `READ_SERVICE_PORT`   | `5101`                     | Port for the ReadService                                           |
@@ -216,12 +264,13 @@ All options are controlled via environment variables:
 | `DB_PORT`          | *(parsed by start_app.sh)* | PostgreSQL port — parsed from `DATABASE_URL` at launch   |
 | `DB_NAME`          | *(parsed by start_app.sh)* | PostgreSQL database name — parsed from `DATABASE_URL`    |
 
-**Keycloak env vars** (required only when running the Agentic IAM setup):
+**Keycloak env vars** (required for auth; defaulted by `start_app.sh`):
 
 | Variable                   | Default                   | Description                                              |
 |----------------------------|---------------------------|----------------------------------------------------------|
-| `KEYCLOAK_BASE_URL`        | `http://127.0.0.1:8080`   | Keycloak base URL (used by setup scripts and services)   |
-| `KEYCLOAK_ADMIN`           | `admin`                   | Keycloak admin username                                  |
+| `KEYCLOAK_BASE_URL`        | `http://127.0.0.1:8080`   | Keycloak base URL (used by auth_helper.py and services)  |
+| `KEYCLOAK_REALM`           | `voyager`                 | Keycloak realm name                                      |
+| `KEYCLOAK_ADMIN`           | `admin`                   | Keycloak admin username (setup scripts only)             |
 | `KEYCLOAK_ADMIN_PASSWORD`  | `admin`                   | Keycloak admin password — read from env, never hardcoded |
 
 ## Debugging
@@ -325,28 +374,16 @@ POST /api/chat
 Each service:
 1. Receives the tool name and args from the **POST `/execute` request body**
 2. Reads the auth token from the **`Authorization: Bearer` request header**
-3. Calls `validate_token(token)` — currently a stub that returns `True`
-4. Dispatches to the appropriate `db.*` helper
+3. Validates the JWT and extracts identity via `auth_helper.require_role` (Keycloak RS256)
+4. Dispatches to the appropriate `db.*` helper, passing `user_id` for ownership filtering
+   when the caller has the `user` role
 5. Returns a JSON response (`{"result": ...}` or `{"error": "..."}`)
 
 Each service also exposes `GET /health` → `{"status": "ok", "service": "<name>"}` used by
 the launcher script to verify startup.
 
-**To integrate a real auth service**, replace the body of `validate_token()` in the relevant
-service file(s). The `AUTH_TOKEN` env var is the injection point — set it to the token your
-auth service expects:
-
-```python
-# In any agents/*_service.py — current stub:
-def validate_token(token: str) -> bool:
-    # TODO: replace with external auth service call
-    return True
-
-# Future integration:
-def validate_token(token: str) -> bool:
-    resp = requests.post(AUTH_SERVICE_URL, json={"token": token}, timeout=5)
-    return resp.json().get("valid", False)
-```
+The `app.py` orchestrator extracts the inbound `Authorization` header and forwards it to
+each agent service call, so the user's identity flows end-to-end through the call chain.
 
 ## Vault secret management
 
@@ -441,13 +478,15 @@ keycloak-vault-oidc-plan.md            ← Plan: Keycloak OIDC + Vault Agentic I
 
 ## API
 
-| Method | Path                  | Description                           |
-|--------|-----------------------|---------------------------------------|
-| GET    | `/`                   | Serves the chat UI                    |
-| GET    | `/api/models`         | Lists locally available Ollama models |
-| POST   | `/api/chat`           | Streams a chat response (SSE)         |
-| GET    | `/api/bookings`       | Returns all bookings as JSON          |
-| GET    | `/api/payment-cards`  | Returns all payment cards as JSON     |
+All endpoints except `GET /` and `GET /api/models` require `Authorization: Bearer <token>`.
+
+| Method | Path                  | Auth required | Description                                                  |
+|--------|-----------------------|---------------|--------------------------------------------------------------|
+| GET    | `/`                   | No            | Serves the chat UI (redirects to Keycloak if not logged in)  |
+| GET    | `/api/models`         | No            | Lists locally available Ollama models                        |
+| POST   | `/api/chat`           | Yes           | Streams a chat response (SSE); forwards token to services    |
+| GET    | `/api/bookings`       | Yes           | Returns bookings (filtered by role/user_id)                  |
+| GET    | `/api/payment-cards`  | Yes           | Returns payment cards (filtered by role/user_id)             |
 
 ### POST `/api/chat` body
 
