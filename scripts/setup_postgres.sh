@@ -21,7 +21,7 @@
 set -euo pipefail
 
 CONTAINER_NAME="voyager-postgres"
-POSTGRES_IMAGE="registry.redhat.io/rhel9/postgresql-16:latest"
+POSTGRES_IMAGE="docker.io/library/postgres:latest"
 
 # Resolve the repository root (one level up from this script's directory)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
