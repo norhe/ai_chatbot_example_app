@@ -87,13 +87,13 @@ _write_db_role() {
 }
 
 _write_db_role "voyager_booking_read" \
-    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON bookings TO \"{{name}}\";"
+    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT ON users TO \"{{name}}\"; GRANT SELECT ON bookings TO \"{{name}}\";"
 _write_db_role "voyager_booking_write" \
-    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT, UPDATE ON bookings TO \"{{name}}\";"
+    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT ON users TO \"{{name}}\"; GRANT SELECT, INSERT, UPDATE ON bookings TO \"{{name}}\";"
 _write_db_role "voyager_payment_read" \
-    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON payment_cards TO \"{{name}}\";"
+    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT ON users TO \"{{name}}\"; GRANT SELECT ON payment_cards TO \"{{name}}\";"
 _write_db_role "voyager_payment_write" \
-    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT, UPDATE, DELETE ON payment_cards TO \"{{name}}\";"
+    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT ON users TO \"{{name}}\"; GRANT SELECT, INSERT, UPDATE, DELETE ON payment_cards TO \"{{name}}\";"
 
 echo "    Four database roles written."
 

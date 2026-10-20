@@ -10,6 +10,7 @@ from flask_cors import CORS
 import db
 import tools
 import tracer
+import auth_helper
 from auth_helper import require_role
 
 _LOG_LEVEL = logging.DEBUG if os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes") else logging.INFO
@@ -34,6 +35,8 @@ REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "120"))
 SYSTEM_PROMPT = """\
 You are the Voyager Travel AI booking assistant, a helpful agent for the Voyager Travel company.
 Today's date is {date}.
+The authenticated user is: {username}. You do NOT need to ask for login credentials — the user \
+is already signed in and their identity is verified.
 
 You have access to the following tools — use them whenever a user asks about bookings or payment cards:
 
@@ -117,8 +120,10 @@ def chat():
         tracer_token = tracer.set_current_collector(collector)
         try:
             today = date.today().isoformat()
+            user_info = auth_helper.validate_and_identify(bearer_token)
+            username = user_info["username"] if user_info else "unknown"
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT.format(date=today)}
+                {"role": "system", "content": SYSTEM_PROMPT.format(date=today, username=username)}
             ] + list(client_messages)
 
             logger.debug("chat/generate: model=%s message_count=%d", model, len(messages))

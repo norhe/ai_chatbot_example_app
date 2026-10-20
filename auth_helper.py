@@ -103,8 +103,13 @@ def validate_and_identify(token: str, service_name: Optional[str] = None) -> Opt
 
     try:
         jwks_data = _get_jwks()
-        jwks = jwt.PyJWKClient.__new__(jwt.PyJWKClient)
-        signing_key = jwt.PyJWKSet.from_dict(jwks_data).get_signing_key_from_jwt(token)
+        jwk_set = jwt.PyJWKSet.from_dict(jwks_data)
+        unverified_header = jwt.get_unverified_header(token)
+        kid = unverified_header.get("kid")
+        try:
+            signing_key = jwk_set[kid]
+        except KeyError:
+            raise jwt.InvalidKeyError(f"No matching key found for kid={kid!r}")
 
         payload = jwt.decode(
             token,
@@ -114,6 +119,7 @@ def validate_and_identify(token: str, service_name: Optional[str] = None) -> Opt
             options={
                 "verify_exp": True,
                 "verify_iss": True,
+                "verify_aud": False,
                 "require": ["sub", "exp", "iss"],
             },
         )

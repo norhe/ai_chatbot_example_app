@@ -1971,9 +1971,15 @@
   // spans to that id and returns them in the JSON body ("traces"). Callers pass
   // those to VizTrace.ingestMany() after the browser -> orchestrator span, which
   // is recorded here, so the timeline reads in call order.
+  // Guard against concurrent 401-triggered redirects causing a reload loop.
+  let _redirectPending = false;
+
   async function authFetch(url, options = {}) {
     const token = _getToken();
-    if (!token) { await _redirectToLogin(); return null; }
+    if (!token) {
+      if (!_redirectPending) { _redirectPending = true; await _redirectToLogin(); }
+      return null;
+    }
     const traceId = _newTraceId();
     const headers = { ...(options.headers || {}), "Authorization": `Bearer ${token}`, "X-Trace-Id": traceId };
     const method = (options.method || "GET").toUpperCase();
@@ -1996,7 +2002,11 @@
       status: resp.ok ? "success" : "error",
       details: { method, service_url: url, status_code: resp.status },
     });
-    if (resp.status === 401) { sessionStorage.removeItem("kc_token_data"); await _redirectToLogin(); return null; }
+    if (resp.status === 401) {
+      sessionStorage.removeItem("kc_token_data");
+      if (!_redirectPending) { _redirectPending = true; await _redirectToLogin(); }
+      return null;
+    }
     return resp;
   }
 
