@@ -385,6 +385,55 @@ the launcher script to verify startup.
 The `app.py` orchestrator extracts the inbound `Authorization` header and forwards it to
 each agent service call, so the user's identity flows end-to-end through the call chain.
 
+## Call Visualization panel (training tool)
+
+The left-hand **Call Trace** panel shows every hop of a request in real time. Toggle it with the
+**Call Trace** header button or `Alt+V`. It is meant for onboarding engineers to the
+agent / Keycloak / Vault / PostgreSQL architecture.
+
+**Tabs**
+
+- **Topology Map** — SVG diagram of Browser, Keycloak, Orchestrator, Ollama, the four agent
+  services, Vault and PostgreSQL. Nodes and edges pulse as spans arrive (one hop at a time, faster
+  if a backlog builds up). Click a node or edge to see its role, security boundary and live
+  call/error/latency counters.
+- **Sequence & Trace** — one collapsible card group per interaction (`trace_id`), with a card per
+  span: source → target, duration, status, a concept badge and an explanation. Expand a card for
+  metadata (Vault lease ID/TTL, ephemeral DB user, JWKS URI, SQL text and params, tool args and
+  results). **Export** downloads a JSON file for one interaction or all of them.
+
+**Controls**: Clear, Pause/Resume (spans received while paused are queued, then released),
+Replay Last Flow, and filters for OIDC, Vault, Database, Services, LLM and Browser spans.
+
+**What each span type teaches**
+
+| Type | Badge | Shows |
+|------|-------|-------|
+| `browser_auth` | OIDC PKCE | PKCE S256 challenge, redirect to Keycloak, code→token exchange |
+| `oidc_auth` | JWT RS256 Verification | JWKS cache hit/miss, signature check, RBAC user lookup |
+| `vault_creds` | Vault AppRole / Dynamic DB Secret Lease | AppRole login, token renewal, ephemeral credential and lease TTL |
+| `db_query` | Least Privilege DB Query | SQL executed with the short-lived credential |
+| `service_http` | Agent Tool Dispatch | Orchestrator → agent service call with the forwarded Bearer token |
+| `llm_eval` | LLM Function Calling | Phase 1 tool selection and Phase 2 streamed answer |
+
+**Suggested exercises**
+
+1. Log in and watch the `browser_auth` spans (PKCE challenge → redirect → token exchange).
+2. Ask "List my bookings" — follow Orchestrator → Booking Read → Keycloak JWKS → Vault → PostgreSQL.
+3. Ask "Cancel booking VT-00001" — compare the write-scoped Vault role with the read-only one.
+4. Ask for a payment card — note that the Payment Read service uses a different Vault database role.
+5. Stop one agent service (`services/stop_services.sh`) and repeat a query to see red error spans.
+
+**How it works**: `tracer.py` records spans in a per-request collector. `/api/chat` streams them as
+`data: {"trace": {...}}` SSE events alongside the chat chunks; `GET /api/bookings` and
+`/api/payment-cards` return them in a `traces` array. The browser sends an `X-Trace-Id` header so
+browser and server spans share one `trace_id`.
+
+> **Training use only.** Span details include unsanitized tool arguments, SQL parameters, results
+> and Vault lease metadata so learners can see what actually happens. Tokens, the PKCE verifier and
+> the authorization code are never recorded. Do not expose the panel or trace payloads in a
+> production deployment.
+
 ## Vault secret management
 
 The project demonstrates two layers of database credential management, both implemented and
@@ -443,8 +492,10 @@ comparison and sub-task breakdown.
 
 ```
 app.py                                  ← Flask orchestrator, tool-call loop, SSE streaming
+tracer.py                               ← Trace/span collector used by the Call Visualization panel
 db.py                                   ← PostgreSQL schema, seed data, CRUD helpers (Vault-aware)
 tools.py                                ← Ollama tool schemas + HTTP dispatcher
+tests/                                  ← Unit tests (run: uv run python -m unittest discover -s tests -t .)
 agents/
   vault_helper.py                       ← AppRole login + background token renewal (Vault helper)
   read_service.py                       ← get_booking, list_bookings         :5101 [read-only]
@@ -466,7 +517,7 @@ scripts/
   vault_register_agents.sh             ← Per-agent Identity entity, alias, and registry entry
   vault_approle_creds/                  ← Per-service AppRole .env files (gitignored, written by setup_vault.sh)
 static/
-  index.html                            ← Single-page chat UI with bookings sidebar (vanilla JS)
+  index.html                            ← Single-page chat UI, bookings sidebar, Call Trace panel (vanilla JS)
 start_app.sh                            ← Launch all 5 processes with Vault AppRole credentials
 pyproject.toml                          ← Project metadata and dependencies (uv)
 uv.lock                                 ← Pinned dependency lockfile

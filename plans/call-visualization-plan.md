@@ -124,7 +124,7 @@ The UI will feature a dual-tab left panel containing:
 - **Relevant Context**:
   - [`static/index.html`](static/index.html)
   - [`app.py`](app.py)
-- **Status**: `[ ] pending`
+- **Status**: `[X] complete`
 
 ---
 
@@ -146,4 +146,4 @@ The UI will feature a dual-tab left panel containing:
   - [`README.md`](README.md)
   - [`app.py`](app.py)
   - [`services/start_services.sh`](services/start_services.sh)
-- **Status**: `[ ] pending`
+- **Status**: `[-] partial` — error-span handling in `tools.py`/`tracer.py` verified with mocks (unauthorized, HTTP 500, timeout, unreachable, unknown tool all produce red spans) and README guide written. Live end-to-end run of the 7 tool types against Keycloak/Vault/Ollama/PostgreSQL still needs to be done manually.

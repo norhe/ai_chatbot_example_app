@@ -268,12 +268,13 @@ def dispatch_tool(name: str, args: dict, token: str = "", trace_id: str = "") ->
     if effective_trace_id:
         headers["X-Trace-Id"] = effective_trace_id
 
+    span_details = {"tool": name, "args": args, "service_url": base_url}
     with tracer.span(
         operation=f"Tool Dispatch: {name}",
         source="orchestrator",
         target=target_service,
         span_type="service_http",
-        details={"tool": name, "args": args, "service_url": base_url},
+        details=span_details,
     ):
         try:
             resp = requests.post(
@@ -283,12 +284,15 @@ def dispatch_tool(name: str, args: dict, token: str = "", trace_id: str = "") ->
                 timeout=30,
             )
             logger.debug("dispatch_tool: service=%s status=%d", base_url, resp.status_code)
+            span_details["status_code"] = resp.status_code
             if resp.status_code == 401:
                 logger.error("dispatch_tool: service=%s returned 401 Unauthorized", base_url)
+                span_details["error"] = "Unauthorized"
                 return {"error": "Unauthorized"}
             if resp.status_code != 200:
                 logger.error("dispatch_tool: service=%s HTTP %d body=%s",
                              base_url, resp.status_code, resp.text[:500])
+                span_details["error"] = f"Agent service error: HTTP {resp.status_code}"
                 return {"error": f"Agent service error: HTTP {resp.status_code}"}
             result_json = resp.json()
             # If agent returned remote traces, integrate them into active collector
@@ -310,10 +314,13 @@ def dispatch_tool(name: str, args: dict, token: str = "", trace_id: str = "") ->
             return result_json
         except requests.Timeout:
             logger.error("dispatch_tool: service=%s timed out", base_url)
+            span_details["error"] = "Agent timed out"
             return {"error": "Agent timed out"}
         except requests.RequestException as e:
             logger.error("dispatch_tool: service=%s connection error: %s", base_url, e)
+            span_details["error"] = "Agent unreachable"
             return {"error": f"Agent unreachable: {e}"}
         except Exception as e:  # noqa: BLE001
             logger.exception("dispatch_tool: unexpected error for service=%s", base_url)
+            span_details["error"] = "Unexpected dispatch error"
             return {"error": str(e)}

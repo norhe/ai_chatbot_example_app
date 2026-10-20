@@ -193,16 +193,19 @@ def span(
     span_id = uuid.uuid4().hex[:12]
     start_time = time.monotonic()
     iso_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    span_details = dict(details) if details else {}
+    # Not copied: the caller may set details["error"] inside the block to mark a
+    # handled failure (e.g. an HTTP 401 returned rather than raised).
+    span_details = details if details is not None else {}
     status = "success"
     try:
         yield span_id
     except Exception as exc:
-        status = "error"
         span_details["error"] = str(exc)
         span_details["error_type"] = type(exc).__name__
         raise
     finally:
+        if "error" in span_details:
+            status = "error"
         duration_ms = (time.monotonic() - start_time) * 1000.0
         if coll:
             coll.record(

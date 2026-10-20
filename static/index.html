@@ -1684,6 +1684,61 @@
   const KC_CLIENT_ID = "voyager-user";
   const KC_REDIRECT  = window.location.origin + "/";
 
+  // ── Client-side trace helpers ────────────────────────────────────────────
+  // Browser-originated spans use the same event model as server spans so the
+  // topology map and timeline render them identically. Secrets (tokens, PKCE
+  // verifier, authorization code) are never placed in trace details.
+  // Spans emitted just before a full-page redirect are "deferred": stored in
+  // sessionStorage and ingested on the next page load.
+
+  const _DEFERRED_KEY = "viz_deferred_traces";
+  const _AUTH_TRACE_KEY = "viz_auth_trace_id";
+
+  function _randomHex(bytes) {
+    return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function _newTraceId() { return _randomHex(8); }
+
+  function _authTraceId() {
+    let id = sessionStorage.getItem(_AUTH_TRACE_KEY);
+    if (!id) { id = _newTraceId(); sessionStorage.setItem(_AUTH_TRACE_KEY, id); }
+    return id;
+  }
+
+  function _clientTrace({ traceId, source = "browser", target = "browser", operation, type = "browser_auth",
+                          durationMs = 0, status = "success", details = {}, deferred = false }) {
+    const ev = {
+      trace_id: traceId,
+      span_id: _randomHex(6),
+      parent_span_id: null,
+      source, target, operation, type,
+      timestamp: new Date().toISOString(),
+      duration_ms: Math.round(durationMs * 100) / 100,
+      status,
+      details,
+    };
+    if (deferred) {
+      try {
+        const list = JSON.parse(sessionStorage.getItem(_DEFERRED_KEY) || "[]");
+        list.push(ev);
+        sessionStorage.setItem(_DEFERRED_KEY, JSON.stringify(list.slice(-20)));
+      } catch { /* storage unavailable */ }
+    } else {
+      VizTrace.ingest(ev);
+    }
+    return ev;
+  }
+
+  function _flushDeferredTraces() {
+    let list = [];
+    try {
+      list = JSON.parse(sessionStorage.getItem(_DEFERRED_KEY) || "[]");
+      sessionStorage.removeItem(_DEFERRED_KEY);
+    } catch { /* storage unavailable */ }
+    VizTrace.ingestMany(list);
+  }
+
   // ── Auth state ───────────────────────────────────────────────────────────
 
   function _b64url(buf) {
@@ -1692,9 +1747,23 @@
   }
 
   async function _generatePKCE() {
+    const t0       = performance.now();
     const verifier = _b64url(crypto.getRandomValues(new Uint8Array(32)));
     const digest   = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-    return { verifier, challenge: _b64url(digest) };
+    const challenge = _b64url(digest);
+    _clientTrace({
+      traceId: _authTraceId(),
+      operation: "Generate PKCE code verifier & S256 challenge",
+      durationMs: performance.now() - t0,
+      deferred: true,
+      details: {
+        algorithm: "SHA-256",
+        code_challenge_method: "S256",
+        code_challenge: challenge,
+        verifier_bits: 256,
+      },
+    });
+    return { verifier, challenge };
   }
 
   function _getToken() {
@@ -1704,6 +1773,13 @@
       const data = JSON.parse(raw);
       if (Date.now() / 1000 > data.expires_at - 30) {
         sessionStorage.removeItem("kc_token_data");
+        _clientTrace({
+          traceId: _authTraceId(),
+          target: "keycloak",
+          operation: "Access token expired - re-authentication required",
+          deferred: true,
+          details: { reason: "expires_at reached (30s skew)", expires_at: data.expires_at },
+        });
         return null;
       }
       return data.access_token;
@@ -1724,8 +1800,18 @@
     const state    = params.get("state");
     const storedState    = sessionStorage.getItem("kc_state");
     const codeVerifier   = sessionStorage.getItem("kc_verifier");
+    const authTraceId    = _authTraceId();
 
-    if (!code || state !== storedState || !codeVerifier) return false;
+    if (!code || state !== storedState || !codeVerifier) {
+      _clientTrace({
+        traceId: authTraceId,
+        operation: "Validate authorization callback (state / verifier check)",
+        status: "error",
+        details: { state_matches: state === storedState, has_code: !!code, has_verifier: !!codeVerifier },
+      });
+      sessionStorage.removeItem(_AUTH_TRACE_KEY);
+      return false;
+    }
 
     // Clean the URL
     history.replaceState({}, document.title, window.location.pathname);
@@ -1741,18 +1827,56 @@
       code_verifier: codeVerifier,
     });
 
+    const t0 = performance.now();
     const resp = await fetch(tokenUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
     });
-    if (!resp.ok) return false;
-    _storeToken(await resp.json());
+    const exchangeDetails = {
+      method: "POST",
+      service_url: tokenUrl,
+      grant_type: "authorization_code",
+      client_id: KC_CLIENT_ID,
+      redirect_uri: KC_REDIRECT,
+      status_code: resp.status,
+      note: "Authorization code and code_verifier were sent; neither is recorded in this trace.",
+    };
+    if (!resp.ok) {
+      _clientTrace({
+        traceId: authTraceId, target: "keycloak", operation: "PKCE token exchange (code + code_verifier)",
+        durationMs: performance.now() - t0, status: "error", details: exchangeDetails,
+      });
+      sessionStorage.removeItem(_AUTH_TRACE_KEY);
+      return false;
+    }
+    const tokenResponse = await resp.json();
+    _storeToken(tokenResponse);
+    _clientTrace({
+      traceId: authTraceId, target: "keycloak", operation: "PKCE token exchange (code + code_verifier)",
+      durationMs: performance.now() - t0,
+      details: { ...exchangeDetails, token_type: tokenResponse.token_type, expires_in: tokenResponse.expires_in },
+    });
+    sessionStorage.removeItem(_AUTH_TRACE_KEY);
     return true;
   }
 
   async function _redirectToLogin() {
     const { verifier, challenge } = await _generatePKCE();
+    _clientTrace({
+      traceId: _authTraceId(),
+      target: "keycloak",
+      operation: "Redirect to Keycloak authorization endpoint",
+      deferred: true,
+      details: {
+        service_url: `${KC_BASE}/realms/${KC_REALM}/protocol/openid-connect/auth`,
+        response_type: "code",
+        client_id: KC_CLIENT_ID,
+        redirect_uri: KC_REDIRECT,
+        scope: "openid profile",
+        code_challenge_method: "S256",
+      },
+    });
     const state = _b64url(crypto.getRandomValues(new Uint8Array(16)));
     sessionStorage.setItem("kc_verifier", verifier);
     sessionStorage.setItem("kc_state",    state);
@@ -1771,6 +1895,8 @@
   // ── Initialise auth before anything else ────────────────────────────────
 
   async function _initAuth() {
+    // Show browser spans recorded before the last redirect
+    _flushDeferredTraces();
     // Check for auth code callback first
     if (window.location.search.includes("code=")) {
       await _handleCallback();
@@ -1841,11 +1967,35 @@
 
   // ── Authenticated fetch ──────────────────────────────────────────────────
 
+  // Each call gets its own trace id sent as X-Trace-Id; the server attaches its
+  // spans to that id and returns them in the JSON body ("traces"). Callers pass
+  // those to VizTrace.ingestMany() after the browser -> orchestrator span, which
+  // is recorded here, so the timeline reads in call order.
   async function authFetch(url, options = {}) {
     const token = _getToken();
     if (!token) { await _redirectToLogin(); return null; }
-    const headers = { ...(options.headers || {}), "Authorization": `Bearer ${token}` };
-    const resp = await fetch(url, { ...options, headers });
+    const traceId = _newTraceId();
+    const headers = { ...(options.headers || {}), "Authorization": `Bearer ${token}`, "X-Trace-Id": traceId };
+    const method = (options.method || "GET").toUpperCase();
+    const t0 = performance.now();
+    let resp;
+    try {
+      resp = await fetch(url, { ...options, headers });
+    } catch (err) {
+      _clientTrace({
+        traceId, target: "orchestrator", type: "service_http", status: "error",
+        operation: `${method} ${url}`, durationMs: performance.now() - t0,
+        details: { method, service_url: url, error: "Network error" },
+      });
+      throw err;
+    }
+    _clientTrace({
+      traceId, target: "orchestrator", type: "service_http",
+      operation: `${method} ${url} (Bearer token attached)`,
+      durationMs: performance.now() - t0,
+      status: resp.ok ? "success" : "error",
+      details: { method, service_url: url, status_code: resp.status },
+    });
     if (resp.status === 401) { sessionStorage.removeItem("kc_token_data"); await _redirectToLogin(); return null; }
     return resp;
   }
@@ -1879,6 +2029,7 @@
       const res  = await authFetch("/api/bookings");
       if (!res) return;
       const data = await res.json();
+      VizTrace.ingestMany(data.traces);
       if (!res.ok) throw new Error(data.error || "Failed to load bookings");
       const bookings = data.bookings || [];
       if (bookings.length === 0) {
@@ -1912,6 +2063,7 @@
       const res  = await authFetch("/api/payment-cards");
       if (!res) return;
       const data = await res.json();
+      VizTrace.ingestMany(data.traces);
       if (!res.ok) throw new Error(data.error || "Failed to load cards");
       const cards = data.cards || [];
       if (cards.length === 0) {
@@ -2360,15 +2512,53 @@
       edgeStats[edgeKey].lastDetails = ev.details || null;
       if (isError) edgeStats[edgeKey].errors += 1;
 
-      // Animate if visible
-      if (VizTrace.isVisible(ev)) {
-        highlightNode(src, ev.status, duration);
-        highlightEdge(src, tgt, ev.type, ev.status, duration);
-        highlightNode(tgt, ev.status, duration);
-      }
+      // Animate if visible (queued so bursts of spans play one hop at a time)
+      if (VizTrace.isVisible(ev)) enqueueAnimation(ev);
 
       // Refresh inspector if open
       renderInspector();
+    }
+
+    // ── Step playback queue ──
+    // Spans can arrive in bursts (REST responses carry all server spans at once,
+    // SSE tool dispatch yields several together). Each hop is animated for
+    // STEP_MS; if the backlog grows the delay shrinks so playback keeps up.
+    const STEP_MS = 450;
+    const FAST_STEP_MS = 120;
+    const BACKLOG_THRESHOLD = 8;
+    const MAX_QUEUE = 200;
+    const animQueue = [];
+    let draining = false;
+
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    function animateHop(ev, ms) {
+      const src = normalizeNodeName(ev.source);
+      const tgt = normalizeNodeName(ev.target);
+      highlightNode(src, ev.status, ms);
+      highlightEdge(src, tgt, ev.type, ev.status, ms);
+      highlightNode(tgt, ev.status, ms);
+    }
+
+    async function drainQueue() {
+      if (draining) return;
+      draining = true;
+      try {
+        while (animQueue.length > 0) {
+          if (isReplaying) { await sleep(STEP_MS); continue; }
+          const ms = animQueue.length > BACKLOG_THRESHOLD ? FAST_STEP_MS : STEP_MS;
+          animateHop(animQueue.shift(), ms);
+          await sleep(ms);
+        }
+      } finally {
+        draining = false;
+      }
+    }
+
+    function enqueueAnimation(ev) {
+      if (animQueue.length >= MAX_QUEUE) animQueue.shift();
+      animQueue.push(ev);
+      drainQueue();
     }
 
     function inspectOverview() {
@@ -2547,6 +2737,7 @@
     }
 
     function reset() {
+      animQueue.length = 0;
       totalCalls = 0;
       lastLatencyMs = 0;
       Object.keys(nodeStats).forEach(k => {
@@ -3150,17 +3341,31 @@
     const chatToken = _getToken();
     if (!chatToken) { isStreaming = false; sendBtn.disabled = false; await _redirectToLogin(); return; }
 
+    const chatTraceId = _newTraceId();
+    const chatT0 = performance.now();
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${chatToken}`,
+          "X-Trace-Id": chatTraceId,
         },
         body: JSON.stringify({
           model: modelSelect.value,
           messages: conversationHistory,
         }),
+      });
+
+      // Recorded at response headers (time to first byte) so it precedes the
+      // server spans that arrive on the SSE stream.
+      _clientTrace({
+        traceId: chatTraceId, target: "orchestrator", type: "service_http",
+        operation: "POST /api/chat (Bearer token attached, SSE stream)",
+        durationMs: performance.now() - chatT0,
+        status: response.ok ? "success" : "error",
+        details: { method: "POST", service_url: "/api/chat", status_code: response.status, model: modelSelect.value },
       });
 
       if (!response.ok) {
