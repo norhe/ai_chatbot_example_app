@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import requests
+import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,17 @@ AGENT_URLS = {
     "add_payment_card":     f"{_AGENT_BASE}:5104",
     "update_payment_card":  f"{_AGENT_BASE}:5104",
     "remove_payment_card":  f"{_AGENT_BASE}:5104",
+}
+
+TOOL_SERVICES = {
+    "get_booking":          "booking_read_service",
+    "list_bookings":        "booking_read_service",
+    "create_booking":       "booking_mutation_service",
+    "cancel_booking":       "booking_mutation_service",
+    "list_payment_cards":   "payment_read_service",
+    "add_payment_card":     "payment_write_service",
+    "update_payment_card":  "payment_write_service",
+    "remove_payment_card":  "payment_write_service",
 }
 
 # ---------------------------------------------------------------------------
@@ -217,49 +229,91 @@ TOOL_DEFINITIONS = [
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-def dispatch_tool(name: str, args: dict, token: str = "") -> dict:
+def dispatch_tool(name: str, args: dict, token: str = "", trace_id: str = "") -> dict:
     """POST to the appropriate agent microservice and return its JSON result.
 
     Args:
-        name:  Tool name to dispatch.
-        args:  Tool arguments dict.
-        token: Bearer token forwarded from the inbound user request.
+        name:     Tool name to dispatch.
+        args:     Tool arguments dict.
+        token:    Bearer token forwarded from the inbound user request.
+        trace_id: Active trace ID.
 
     Always returns a plain dict:
-      {"result": ...}  on success
-      {"error": "..."}  on failure or unknown tool
+      {"result": ..., "traces": [...]}  on success
+      {"error": "...", "traces": [...]}  on failure or unknown tool
     """
     base_url = AGENT_URLS.get(name)
+    target_service = TOOL_SERVICES.get(name, "agent_service")
+    collector = tracer.get_current_collector()
+    effective_trace_id = trace_id or (collector.trace_id if collector else "")
+
     if not base_url:
         logger.error("dispatch_tool: no service URL for tool=%s", name)
+        if collector:
+            collector.record(
+                source="orchestrator",
+                target=target_service,
+                operation=f"Tool Dispatch: {name}",
+                span_type="service_http",
+                status="error",
+                details={"tool": name, "args": args, "error": f"Unknown tool: {name}"},
+            )
         return {"error": f"Unknown tool: {name}"}
 
     if not token:
         token = os.environ.get("AUTH_TOKEN", "")
     logger.debug("dispatch_tool: POST %s/execute tool=%s", base_url, name)
 
-    try:
-        resp = requests.post(
-            f"{base_url}/execute",
-            json={"tool": name, "args": args},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        logger.debug("dispatch_tool: service=%s status=%d", base_url, resp.status_code)
-        if resp.status_code == 401:
-            logger.error("dispatch_tool: service=%s returned 401 Unauthorized", base_url)
-            return {"error": "Unauthorized"}
-        if resp.status_code != 200:
-            logger.error("dispatch_tool: service=%s HTTP %d body=%s",
-                         base_url, resp.status_code, resp.text[:500])
-            return {"error": f"Agent service error: HTTP {resp.status_code}"}
-        return resp.json()
-    except requests.Timeout:
-        logger.error("dispatch_tool: service=%s timed out", base_url)
-        return {"error": "Agent timed out"}
-    except requests.RequestException as e:
-        logger.error("dispatch_tool: service=%s connection error: %s", base_url, e)
-        return {"error": f"Agent unreachable: {e}"}
-    except Exception as e:  # noqa: BLE001
-        logger.exception("dispatch_tool: unexpected error for service=%s", base_url)
-        return {"error": str(e)}
+    headers = {"Authorization": f"Bearer {token}"}
+    if effective_trace_id:
+        headers["X-Trace-Id"] = effective_trace_id
+
+    with tracer.span(
+        operation=f"Tool Dispatch: {name}",
+        source="orchestrator",
+        target=target_service,
+        span_type="service_http",
+        details={"tool": name, "args": args, "service_url": base_url},
+    ):
+        try:
+            resp = requests.post(
+                f"{base_url}/execute",
+                json={"tool": name, "args": args},
+                headers=headers,
+                timeout=30,
+            )
+            logger.debug("dispatch_tool: service=%s status=%d", base_url, resp.status_code)
+            if resp.status_code == 401:
+                logger.error("dispatch_tool: service=%s returned 401 Unauthorized", base_url)
+                return {"error": "Unauthorized"}
+            if resp.status_code != 200:
+                logger.error("dispatch_tool: service=%s HTTP %d body=%s",
+                             base_url, resp.status_code, resp.text[:500])
+                return {"error": f"Agent service error: HTTP {resp.status_code}"}
+            result_json = resp.json()
+            # If agent returned remote traces, integrate them into active collector
+            remote_traces = result_json.get("traces", [])
+            if collector and remote_traces:
+                for t in remote_traces:
+                    collector.record(
+                        source=t.get("source", target_service),
+                        target=t.get("target", "unknown"),
+                        operation=t.get("operation", "Agent Operation"),
+                        span_type=t.get("type", "service_http"),
+                        duration_ms=t.get("duration_ms", 0.0),
+                        status=t.get("status", "success"),
+                        parent_span_id=t.get("parent_span_id"),
+                        details=t.get("details", {}),
+                        span_id=t.get("span_id"),
+                        timestamp=t.get("timestamp"),
+                    )
+            return result_json
+        except requests.Timeout:
+            logger.error("dispatch_tool: service=%s timed out", base_url)
+            return {"error": "Agent timed out"}
+        except requests.RequestException as e:
+            logger.error("dispatch_tool: service=%s connection error: %s", base_url, e)
+            return {"error": f"Agent unreachable: {e}"}
+        except Exception as e:  # noqa: BLE001
+            logger.exception("dispatch_tool: unexpected error for service=%s", base_url)
+            return {"error": str(e)}

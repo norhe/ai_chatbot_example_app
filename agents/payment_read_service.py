@@ -1,6 +1,8 @@
 import logging, os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("SERVICE_NAME", "payment_read_service")
 import db
+import tracer
 from flask import Flask, request, jsonify, g
 from auth_helper import require_role
 from vault_helper import vault_approle_login, start_token_renewal
@@ -26,10 +28,12 @@ def execute():
     current_user = g.current_user
     role = current_user["role"]
     user_id = current_user["user_id"] if role == "user" else None
+    coll = getattr(g, "trace_collector", None) or tracer.get_current_collector()
+    traces = coll.to_list() if coll else []
 
     data = request.get_json(silent=True)
     if not data or "tool" not in data:
-        return jsonify({"error": "Invalid request: 'tool' field required"}), 400
+        return jsonify({"error": "Invalid request: 'tool' field required", "traces": traces}), 400
 
     tool = data["tool"]
     logger.debug("tool=%s user_id=%s", tool, user_id)
@@ -40,12 +44,14 @@ def execute():
             cards = db.list_payment_cards(user_id=user_id)
         except Exception as e:
             logger.exception("db.list_payment_cards raised an exception")
-            return jsonify({"error": "Internal server error"})
+            traces = coll.to_list() if coll else []
+            return jsonify({"error": "Internal server error", "traces": traces}), 500
         logger.debug("list_payment_cards returned %d rows", len(cards))
-        return jsonify({"result": cards})
+        traces = coll.to_list() if coll else []
+        return jsonify({"result": cards, "traces": traces})
 
     logger.error("Unknown tool: %s", tool)
-    return jsonify({"error": f"Unknown tool: {tool}"}), 400
+    return jsonify({"error": f"Unknown tool: {tool}", "traces": traces}), 400
 
 
 def _init_vault() -> None:

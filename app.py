@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 import requests
 from datetime import date
 from flask import Flask, g, request, jsonify, Response, stream_with_context
@@ -8,6 +9,7 @@ from flask_cors import CORS
 
 import db
 import tools
+import tracer
 from auth_helper import require_role
 
 _LOG_LEVEL = logging.DEBUG if os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes") else logging.INFO
@@ -107,7 +109,12 @@ def chat():
     if not isinstance(model, str) or not model.strip():
         return jsonify({"error": "Invalid model name"}), 400
 
+    trace_id = request.headers.get("X-Trace-Id") or None
+    bearer_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
     def generate():
+        collector = tracer.TraceCollector(trace_id=trace_id)
+        tracer_token = tracer.set_current_collector(collector)
         try:
             today = date.today().isoformat()
             messages = [
@@ -120,6 +127,7 @@ def chat():
             # Phase 1 — non-streaming request to check for tool calls
             # ------------------------------------------------------------------
             logger.debug("Phase 1: sending to Ollama (stream=False, tools=%d)", len(tools.TOOL_DEFINITIONS))
+            p1_start = time.monotonic()
             phase1_resp = requests.post(
                 f"{OLLAMA_BASE_URL}/api/chat",
                 json={
@@ -130,24 +138,49 @@ def chat():
                 },
                 timeout=REQUEST_TIMEOUT,
             )
+            p1_duration = (time.monotonic() - p1_start) * 1000.0
             logger.debug("Phase 1: Ollama status=%d", phase1_resp.status_code)
             if phase1_resp.status_code != 200:
                 logger.error("Phase 1: Ollama error body: %s", phase1_resp.text[:500])
+                collector.record(
+                    source="orchestrator",
+                    target="ollama",
+                    operation=f"Phase 1 LLM Evaluation ({model})",
+                    span_type="llm_eval",
+                    duration_ms=p1_duration,
+                    status="error",
+                    details={"model": model, "status_code": phase1_resp.status_code, "error": "Ollama error"},
+                )
+                yield f"data: {json.dumps({'trace': collector.events[-1].to_dict()})}\n\n"
                 yield f"data: {json.dumps({'error': 'Ollama returned an error'})}\n\n"
                 return
 
             assistant_message = phase1_resp.json()["message"]
             tool_calls = assistant_message.get("tool_calls") or []
+            tool_names = [c["function"]["name"] for c in tool_calls] if tool_calls else []
             logger.debug("Phase 1: tool_calls=%d", len(tool_calls))
+
+            collector.record(
+                source="orchestrator",
+                target="ollama",
+                operation=f"Phase 1 LLM Evaluation ({model})",
+                span_type="llm_eval",
+                duration_ms=p1_duration,
+                status="success",
+                details={
+                    "model": model,
+                    "tool_count": len(tools.TOOL_DEFINITIONS),
+                    "tools_invoked": tool_names,
+                    "prompt_tokens": len(messages),
+                },
+            )
+            yield f"data: {json.dumps({'trace': collector.events[-1].to_dict()})}\n\n"
 
             if tool_calls:
                 # Append the assistant's tool-call message to the conversation
                 messages.append(assistant_message)
 
                 # Dispatch each tool call and append the results
-                # Extract bearer token to forward to agent services
-                bearer_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-
                 for call in tool_calls:
                     fn = call["function"]
                     name = fn["name"]
@@ -155,18 +188,28 @@ def chat():
                     if isinstance(args, str):
                         args = json.loads(args)
                     logger.debug("Dispatching tool: name=%s args=%s", name, json.dumps(args))
-                    result = tools.dispatch_tool(name, args, token=bearer_token)
+                    prev_count = len(collector.events)
+                    result = tools.dispatch_tool(name, args, token=bearer_token, trace_id=collector.trace_id)
                     logger.info("Tool dispatched: name=%s result_keys=%s", name, list(result.keys()))
                     logger.debug("Tool result: %s", json.dumps(result))
+
+                    # Yield newly recorded spans over SSE immediately
+                    for ev in collector.events[prev_count:]:
+                        yield f"data: {json.dumps({'trace': ev.to_dict()})}\n\n"
+
+                    # Ollama expects the tool output inside the role=tool content
+                    tool_content = result.get("result", result) if isinstance(result, dict) and "result" in result else result
                     messages.append({
                         "role": "tool",
-                        "content": json.dumps(result),
+                        "content": json.dumps(tool_content),
                     })
 
                 # ------------------------------------------------------------------
                 # Phase 2 — stream the final natural-language reply
                 # ------------------------------------------------------------------
                 logger.debug("Phase 2: streaming final reply (message_count=%d)", len(messages))
+                p2_start = time.monotonic()
+                full_reply = ""
                 with requests.post(
                     f"{OLLAMA_BASE_URL}/api/chat",
                     json={
@@ -178,8 +221,19 @@ def chat():
                     timeout=REQUEST_TIMEOUT,
                 ) as stream_resp:
                     if stream_resp.status_code != 200:
+                        collector.record(
+                            source="orchestrator",
+                            target="ollama",
+                            operation=f"Phase 2 LLM Streaming ({model})",
+                            span_type="llm_eval",
+                            duration_ms=(time.monotonic() - p2_start) * 1000.0,
+                            status="error",
+                            details={"model": model, "status_code": stream_resp.status_code},
+                        )
+                        yield f"data: {json.dumps({'trace': collector.events[-1].to_dict()})}\n\n"
                         yield f"data: {json.dumps({'error': 'Ollama returned an error'})}\n\n"
                         return
+
                     for line in stream_resp.iter_lines():
                         if not line:
                             continue
@@ -187,11 +241,24 @@ def chat():
                             chunk = json.loads(line)
                             content = chunk.get("message", {}).get("content", "")
                             done = chunk.get("done", False)
+                            full_reply += content
                             yield f"data: {json.dumps({'content': content, 'done': done})}\n\n"
                             if done:
                                 break
                         except json.JSONDecodeError:
                             continue
+
+                p2_duration = (time.monotonic() - p2_start) * 1000.0
+                collector.record(
+                    source="orchestrator",
+                    target="ollama",
+                    operation=f"Phase 2 LLM Streaming Response ({model})",
+                    span_type="llm_eval",
+                    duration_ms=p2_duration,
+                    status="success",
+                    details={"model": model, "response_chars": len(full_reply)},
+                )
+                yield f"data: {json.dumps({'trace': collector.events[-1].to_dict()})}\n\n"
             else:
                 # No tool calls — yield the full content from phase 1 then done
                 content = assistant_message.get("content", "")
@@ -204,6 +271,8 @@ def chat():
         except Exception as e:
             logger.exception("Unexpected error in generate()")
             yield f"data: {json.dumps({'error': 'Internal server error'})}\n\n"
+        finally:
+            tracer.set_current_collector(None)
 
     return Response(
         stream_with_context(generate()),
@@ -221,7 +290,9 @@ def get_bookings():
     current_user = g.current_user
     user_id = current_user["user_id"] if current_user["role"] == "user" else None
     bookings = db.list_bookings(user_id=user_id)
-    return jsonify({"bookings": bookings})
+    coll = getattr(g, "trace_collector", None) or tracer.get_current_collector()
+    traces = coll.to_list() if coll else []
+    return jsonify({"bookings": bookings, "traces": traces})
 
 
 @app.route("/api/payment-cards", methods=["GET"])
@@ -230,7 +301,9 @@ def get_payment_cards():
     current_user = g.current_user
     user_id = current_user["user_id"] if current_user["role"] == "user" else None
     cards = db.list_payment_cards(user_id=user_id)
-    return jsonify({"cards": cards})
+    coll = getattr(g, "trace_collector", None) or tracer.get_current_collector()
+    traces = coll.to_list() if coll else []
+    return jsonify({"cards": cards, "traces": traces})
 
 
 if __name__ == "__main__":

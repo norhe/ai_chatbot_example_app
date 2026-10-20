@@ -1,6 +1,8 @@
 import logging, os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("SERVICE_NAME", "payment_write_service")
 import db
+import tracer
 from flask import Flask, request, jsonify, g
 from auth_helper import require_role
 from vault_helper import vault_approle_login, start_token_renewal
@@ -26,10 +28,12 @@ def execute():
     current_user = g.current_user
     role = current_user["role"]
     user_id = current_user["user_id"] if role == "user" else None
+    coll = getattr(g, "trace_collector", None) or tracer.get_current_collector()
+    traces = coll.to_list() if coll else []
 
     data = request.get_json(silent=True)
     if not data or "tool" not in data:
-        return jsonify({"error": "Invalid request: 'tool' field required"}), 400
+        return jsonify({"error": "Invalid request: 'tool' field required", "traces": traces}), 400
 
     tool = data["tool"]
     args = data.get("args", {})
@@ -48,9 +52,11 @@ def execute():
             )
         except Exception as e:
             logger.exception("db.add_payment_card raised an exception")
-            return jsonify({"error": "Internal server error"})
+            traces = coll.to_list() if coll else []
+            return jsonify({"error": "Internal server error", "traces": traces}), 500
         logger.debug("add_payment_card result: %s", json.dumps(card))
-        return jsonify({"result": card})
+        traces = coll.to_list() if coll else []
+        return jsonify({"result": card, "traces": traces})
 
     if tool == "update_payment_card":
         card_id = args["card_id"]
@@ -62,12 +68,14 @@ def execute():
             card = db.update_payment_card(card_id, user_id=user_id, **fields)
         except Exception as e:
             logger.exception("db.update_payment_card raised an exception")
-            return jsonify({"error": "Internal server error"})
+            traces = coll.to_list() if coll else []
+            return jsonify({"error": "Internal server error", "traces": traces}), 500
         logger.debug("update_payment_card returned: %s", json.dumps(card))
+        traces = coll.to_list() if coll else []
         if card is None:
             logger.warning("update_payment_card: card_id=%s not found or not accessible", card_id)
-            return jsonify({"error": "Card not found"})
-        return jsonify({"result": card})
+            return jsonify({"error": "Card not found", "traces": traces})
+        return jsonify({"result": card, "traces": traces})
 
     if tool == "remove_payment_card":
         card_id = args["card_id"]
@@ -76,15 +84,17 @@ def execute():
             removed = db.remove_payment_card(card_id, user_id=user_id)
         except Exception as e:
             logger.exception("db.remove_payment_card raised an exception")
-            return jsonify({"error": "Internal server error"})
+            traces = coll.to_list() if coll else []
+            return jsonify({"error": "Internal server error", "traces": traces}), 500
         logger.debug("remove_payment_card returned: %s", removed)
+        traces = coll.to_list() if coll else []
         if not removed:
             logger.warning("remove_payment_card: card_id=%s not found or not accessible", card_id)
-            return jsonify({"error": "Card not found"})
-        return jsonify({"result": "Card removed"})
+            return jsonify({"error": "Card not found", "traces": traces})
+        return jsonify({"result": "Card removed", "traces": traces})
 
     logger.error("Unknown tool: %s", tool)
-    return jsonify({"error": f"Unknown tool: {tool}"}), 400
+    return jsonify({"error": f"Unknown tool: {tool}", "traces": traces}), 400
 
 
 def _init_vault() -> None:

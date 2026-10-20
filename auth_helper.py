@@ -27,6 +27,7 @@ import requests as http_requests
 from flask import g, jsonify, request
 
 import db
+import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def _get_jwks() -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def validate_and_identify(token: str) -> Optional[dict]:
+def validate_and_identify(token: str, service_name: Optional[str] = None) -> Optional[dict]:
     """Decode and validate a Keycloak JWT.
 
     Returns a dict:
@@ -82,8 +83,23 @@ def validate_and_identify(token: str) -> Optional[dict]:
 
     Never logs the token value itself.
     """
+    src = service_name or os.environ.get("SERVICE_NAME", "orchestrator")
+    collector = tracer.get_current_collector()
+
     if not token:
+        if collector:
+            collector.record(
+                source=src,
+                target="keycloak",
+                operation="OIDC Token Validation",
+                span_type="oidc_auth",
+                status="error",
+                details={"error": "Missing bearer token", "issuer": _ISSUER},
+            )
         return None
+
+    start_time = time.monotonic()
+    iso_time = datetime_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     try:
         jwks_data = _get_jwks()
@@ -103,15 +119,55 @@ def validate_and_identify(token: str) -> Optional[dict]:
         )
     except jwt.ExpiredSignatureError:
         logger.warning('{"event": "jwt_rejected", "reason": "expired"}')
+        if collector:
+            collector.record(
+                source=src,
+                target="keycloak",
+                operation="OIDC Token RS256 Verification",
+                span_type="oidc_auth",
+                duration_ms=(time.monotonic() - start_time) * 1000.0,
+                status="error",
+                details={"error": "Token expired", "issuer": _ISSUER},
+            )
         return None
     except jwt.InvalidIssuerError:
         logger.warning('{"event": "jwt_rejected", "reason": "invalid_issuer"}')
+        if collector:
+            collector.record(
+                source=src,
+                target="keycloak",
+                operation="OIDC Token RS256 Verification",
+                span_type="oidc_auth",
+                duration_ms=(time.monotonic() - start_time) * 1000.0,
+                status="error",
+                details={"error": "Invalid issuer", "issuer": _ISSUER},
+            )
         return None
     except jwt.PyJWTError as exc:
         logger.warning('{"event": "jwt_rejected", "reason": "%s"}', type(exc).__name__)
+        if collector:
+            collector.record(
+                source=src,
+                target="keycloak",
+                operation="OIDC Token RS256 Verification",
+                span_type="oidc_auth",
+                duration_ms=(time.monotonic() - start_time) * 1000.0,
+                status="error",
+                details={"error": str(exc), "issuer": _ISSUER},
+            )
         return None
     except Exception as exc:
         logger.warning('{"event": "jwt_rejected", "reason": "%s"}', type(exc).__name__)
+        if collector:
+            collector.record(
+                source=src,
+                target="keycloak",
+                operation="OIDC Token RS256 Verification",
+                span_type="oidc_auth",
+                duration_ms=(time.monotonic() - start_time) * 1000.0,
+                status="error",
+                details={"error": str(exc), "issuer": _ISSUER},
+            )
         return None
 
     sub = payload.get("sub")
@@ -122,13 +178,53 @@ def validate_and_identify(token: str) -> Optional[dict]:
     role = next((r for r in _ROLE_PRIORITY if r in realm_roles), None)
     if role is None:
         logger.warning('{"event": "jwt_rejected", "reason": "no_recognised_role"}')
+        if collector:
+            collector.record(
+                source=src,
+                target="keycloak",
+                operation="OIDC Role Resolution",
+                span_type="oidc_auth",
+                duration_ms=(time.monotonic() - start_time) * 1000.0,
+                status="error",
+                details={"error": "No recognised role in token", "realm_roles": realm_roles},
+            )
         return None
 
     try:
         user = db.get_or_create_user(sub, username, role)
     except Exception as exc:
         logger.warning('{"event": "jwt_user_provision_failed", "reason": "%s"}', type(exc).__name__)
+        if collector:
+            collector.record(
+                source=src,
+                target="keycloak",
+                operation="JIT User Provisioning",
+                span_type="oidc_auth",
+                duration_ms=(time.monotonic() - start_time) * 1000.0,
+                status="error",
+                details={"error": str(exc), "sub": sub, "username": username, "role": role},
+            )
         return None
+
+    duration_ms = (time.monotonic() - start_time) * 1000.0
+    if collector:
+        collector.record(
+            source=src,
+            target="keycloak",
+            operation="OIDC Token RS256 Verification",
+            span_type="oidc_auth",
+            duration_ms=duration_ms,
+            status="success",
+            details={
+                "issuer": _ISSUER,
+                "jwks_uri": _JWKS_URI,
+                "sub": sub,
+                "username": username,
+                "role": role,
+                "algorithm": "RS256",
+                "user_id": user["id"],
+            },
+        )
 
     return {
         "user_id": user["id"],
@@ -151,13 +247,29 @@ def require_role(*allowed_roles: str):
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-            user = validate_and_identify(token)
-            if user is None:
-                return jsonify({"error": "Unauthorized"}), 401
-            if user["role"] not in allowed_roles:
-                return jsonify({"error": "Forbidden"}), 403
-            g.current_user = user
-            return fn(*args, **kwargs)
+            # Check for trace context from header if present
+            trace_id = request.headers.get("X-Trace-Id")
+            coll = tracer.get_current_collector()
+            created_scope = False
+            token_scope = None
+            if coll is None and trace_id:
+                coll = tracer.TraceCollector(trace_id=trace_id)
+                token_scope = tracer.set_current_collector(coll)
+                created_scope = True
+            g.trace_collector = coll
+
+            try:
+                auth_header = request.headers.get("Authorization", "")
+                token = auth_header.removeprefix("Bearer ").strip()
+                user = validate_and_identify(token)
+                if user is None:
+                    return jsonify({"error": "Unauthorized"}), 401
+                if user["role"] not in allowed_roles:
+                    return jsonify({"error": "Forbidden"}), 403
+                g.current_user = user
+                return fn(*args, **kwargs)
+            finally:
+                if created_scope and token_scope is not None:
+                    tracer.set_current_collector(None)
         return wrapper
     return decorator

@@ -28,6 +28,7 @@ import os
 import psycopg2
 import psycopg2.extras
 import hvac
+import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -43,26 +44,40 @@ def _get_vault_db_credentials(role: str) -> tuple[str, str]:
     managed (kept alive) by the background renewal thread in vault_helper.py.
     """
     vault_addr = os.environ["VAULT_ADDR"]
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
     logger.debug(
         '{"event": "vault_db_creds_request", "role": "%s", "vault_addr": "%s"}',
         role, vault_addr,
     )
-    try:
-        client = hvac.Client(url=vault_addr, token=os.environ["VAULT_TOKEN"])
-        response = client.secrets.database.generate_credentials(name=role)
-        data = response["data"]
-        logger.debug(
-            '{"event": "vault_db_creds_issued", "role": "%s", "lease_id": "%s", "lease_duration": %s}',
-            role,
-            response.get("lease_id", ""),
-            response.get("lease_duration", ""),
-        )
-        return data["username"], data["password"]
-    except Exception:
-        logger.exception(
-            '{"event": "vault_db_creds_failed", "role": "%s"}', role,
-        )
-        raise
+    with tracer.span(
+        operation=f"Vault Dynamic DB Credentials Lease ({role})",
+        source=src,
+        target="vault",
+        span_type="vault_creds",
+        details={"vault_addr": vault_addr, "role": role},
+    ):
+        try:
+            client = hvac.Client(url=vault_addr, token=os.environ["VAULT_TOKEN"])
+            response = client.secrets.database.generate_credentials(name=role)
+            data = response["data"]
+            logger.debug(
+                '{"event": "vault_db_creds_issued", "role": "%s", "lease_id": "%s", "lease_duration": %s}',
+                role,
+                response.get("lease_id", ""),
+                response.get("lease_duration", ""),
+            )
+            coll = tracer.get_current_collector()
+            if coll and coll.events:
+                # Update details with lease info
+                coll.events[-1].details["lease_id"] = response.get("lease_id", "")
+                coll.events[-1].details["lease_duration"] = response.get("lease_duration", "")
+                coll.events[-1].details["username"] = data.get("username", "")
+            return data["username"], data["password"]
+        except Exception:
+            logger.exception(
+                '{"event": "vault_db_creds_failed", "role": "%s"}', role,
+            )
+            raise
 
 
 def get_connection():
@@ -368,29 +383,37 @@ def _row_to_dict(row):
 def create_booking(passenger_name, destination, origin, travel_date,
                    return_date=None, user_id=None):
     """Insert a new booking and return the full booking dict including generated reference."""
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO bookings
-                    (passenger_name, destination, origin, travel_date, return_date, status, user_id)
-                VALUES (%s, %s, %s, %s, %s, 'confirmed', %s)
-                RETURNING id
-                """,
-                (passenger_name, destination, origin, travel_date, return_date, user_id),
-            )
-            row_id = cur.fetchone()["id"]
-            reference = "VT-" + str(row_id).zfill(5)
-            cur.execute(
-                """
-                UPDATE bookings SET reference = %s WHERE id = %s
-                RETURNING *
-                """,
-                (reference, row_id),
-            )
-            booking = _row_to_dict(cur.fetchone())
-        conn.commit()
-    return booking
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
+    with tracer.span(
+        operation="PostgreSQL: INSERT INTO bookings",
+        source=src,
+        target="postgres",
+        span_type="db_query",
+        details={"passenger": passenger_name, "destination": destination, "user_id": user_id},
+    ):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO bookings
+                        (passenger_name, destination, origin, travel_date, return_date, status, user_id)
+                    VALUES (%s, %s, %s, %s, %s, 'confirmed', %s)
+                    RETURNING id
+                    """,
+                    (passenger_name, destination, origin, travel_date, return_date, user_id),
+                )
+                row_id = cur.fetchone()["id"]
+                reference = "VT-" + str(row_id).zfill(5)
+                cur.execute(
+                    """
+                    UPDATE bookings SET reference = %s WHERE id = %s
+                    RETURNING *
+                    """,
+                    (reference, row_id),
+                )
+                booking = _row_to_dict(cur.fetchone())
+            conn.commit()
+        return booking
 
 
 def get_booking(reference, user_id=None):
@@ -399,39 +422,55 @@ def get_booking(reference, user_id=None):
     When user_id is provided, only returns the booking if it belongs to that user.
     Returns dict or None.
     """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            if user_id is not None:
-                cur.execute(
-                    "SELECT * FROM bookings WHERE reference = %s AND user_id = %s",
-                    (reference, user_id),
-                )
-            else:
-                cur.execute(
-                    "SELECT * FROM bookings WHERE reference = %s",
-                    (reference,),
-                )
-            return _row_to_dict(cur.fetchone())
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
+    with tracer.span(
+        operation="PostgreSQL: SELECT FROM bookings",
+        source=src,
+        target="postgres",
+        span_type="db_query",
+        details={"reference": reference, "user_id": user_id},
+    ):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                if user_id is not None:
+                    cur.execute(
+                        "SELECT * FROM bookings WHERE reference = %s AND user_id = %s",
+                        (reference, user_id),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM bookings WHERE reference = %s",
+                        (reference,),
+                    )
+                return _row_to_dict(cur.fetchone())
 
 
 def list_bookings(passenger_name=None, user_id=None):
     """Return bookings, optionally filtered by passenger name and/or owner user_id."""
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            conditions = []
-            params = []
-            if passenger_name:
-                conditions.append("passenger_name ILIKE %s")
-                params.append(f"%{passenger_name}%")
-            if user_id is not None:
-                conditions.append("user_id = %s")
-                params.append(user_id)
-            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-            cur.execute(
-                f"SELECT * FROM bookings {where} ORDER BY travel_date",  # noqa: S608
-                params,
-            )
-            return [_row_to_dict(row) for row in cur.fetchall()]
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
+    with tracer.span(
+        operation="PostgreSQL: SELECT FROM bookings",
+        source=src,
+        target="postgres",
+        span_type="db_query",
+        details={"passenger_filter": passenger_name, "user_id": user_id},
+    ):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                conditions = []
+                params = []
+                if passenger_name:
+                    conditions.append("passenger_name ILIKE %s")
+                    params.append(f"%{passenger_name}%")
+                if user_id is not None:
+                    conditions.append("user_id = %s")
+                    params.append(user_id)
+                where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+                cur.execute(
+                    f"SELECT * FROM bookings {where} ORDER BY travel_date",  # noqa: S608
+                    params,
+                )
+                return [_row_to_dict(row) for row in cur.fetchall()]
 
 
 def cancel_booking(reference, user_id=None):
@@ -440,29 +479,37 @@ def cancel_booking(reference, user_id=None):
     When user_id is provided, only cancels the booking if it belongs to that user.
     Returns updated dict or None.
     """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            if user_id is not None:
-                cur.execute(
-                    """
-                    UPDATE bookings SET status = 'cancelled'
-                    WHERE reference = %s AND user_id = %s
-                    RETURNING *
-                    """,
-                    (reference, user_id),
-                )
-            else:
-                cur.execute(
-                    """
-                    UPDATE bookings SET status = 'cancelled'
-                    WHERE reference = %s
-                    RETURNING *
-                    """,
-                    (reference,),
-                )
-            booking = _row_to_dict(cur.fetchone())
-        conn.commit()
-    return booking
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
+    with tracer.span(
+        operation="PostgreSQL: UPDATE bookings (cancel)",
+        source=src,
+        target="postgres",
+        span_type="db_query",
+        details={"reference": reference, "user_id": user_id},
+    ):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                if user_id is not None:
+                    cur.execute(
+                        """
+                        UPDATE bookings SET status = 'cancelled'
+                        WHERE reference = %s AND user_id = %s
+                        RETURNING *
+                        """,
+                        (reference, user_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE bookings SET status = 'cancelled'
+                        WHERE reference = %s
+                        RETURNING *
+                        """,
+                        (reference,),
+                    )
+                booking = _row_to_dict(cur.fetchone())
+            conn.commit()
+        return booking
 
 
 # ---------------------------------------------------------------------------
@@ -474,20 +521,28 @@ def cancel_booking(reference, user_id=None):
 def add_payment_card(cardholder_name, card_number, card_brand, expiry,
                      billing_address, user_id=None):
     """Insert a new payment card and return the full card dict."""
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO payment_cards
-                    (cardholder_name, card_number, card_brand, expiry, billing_address, user_id)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING *
-                """,
-                (cardholder_name, card_number, card_brand, expiry, billing_address, user_id),
-            )
-            card = _row_to_dict(cur.fetchone())
-        conn.commit()
-    return card
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
+    with tracer.span(
+        operation="PostgreSQL: INSERT INTO payment_cards",
+        source=src,
+        target="postgres",
+        span_type="db_query",
+        details={"cardholder": cardholder_name, "brand": card_brand, "user_id": user_id},
+    ):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO payment_cards
+                        (cardholder_name, card_number, card_brand, expiry, billing_address, user_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (cardholder_name, card_number, card_brand, expiry, billing_address, user_id),
+                )
+                card = _row_to_dict(cur.fetchone())
+            conn.commit()
+        return card
 
 
 _CARD_UPDATABLE_FIELDS = {"cardholder_name", "card_number", "card_brand", "expiry", "billing_address"}
@@ -506,22 +561,30 @@ def update_payment_card(card_id, user_id=None, **fields):
     set_clause = ", ".join(f"{col} = %s" for col in allowed)
     values = list(allowed.values()) + [card_id]
 
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            if user_id is not None:
-                values.append(user_id)
-                cur.execute(
-                    f"UPDATE payment_cards SET {set_clause} WHERE id = %s AND user_id = %s RETURNING *",  # noqa: S608
-                    values,
-                )
-            else:
-                cur.execute(
-                    f"UPDATE payment_cards SET {set_clause} WHERE id = %s RETURNING *",  # noqa: S608
-                    values,
-                )
-            card = _row_to_dict(cur.fetchone())
-        conn.commit()
-    return card
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
+    with tracer.span(
+        operation="PostgreSQL: UPDATE payment_cards",
+        source=src,
+        target="postgres",
+        span_type="db_query",
+        details={"card_id": card_id, "fields": list(allowed.keys()), "user_id": user_id},
+    ):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                if user_id is not None:
+                    values.append(user_id)
+                    cur.execute(
+                        f"UPDATE payment_cards SET {set_clause} WHERE id = %s AND user_id = %s RETURNING *",  # noqa: S608
+                        values,
+                    )
+                else:
+                    cur.execute(
+                        f"UPDATE payment_cards SET {set_clause} WHERE id = %s RETURNING *",  # noqa: S608
+                        values,
+                    )
+                card = _row_to_dict(cur.fetchone())
+            conn.commit()
+        return card
 
 
 def remove_payment_card(card_id, user_id=None):
@@ -530,35 +593,51 @@ def remove_payment_card(card_id, user_id=None):
     When user_id is provided, only deletes the card if it belongs to that user.
     Returns True if a row was deleted, False if not found.
     """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            if user_id is not None:
-                cur.execute(
-                    "DELETE FROM payment_cards WHERE id = %s AND user_id = %s",
-                    (card_id, user_id),
-                )
-            else:
-                cur.execute(
-                    "DELETE FROM payment_cards WHERE id = %s",
-                    (card_id,),
-                )
-            deleted = cur.rowcount > 0
-        conn.commit()
-    return deleted
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
+    with tracer.span(
+        operation="PostgreSQL: DELETE FROM payment_cards",
+        source=src,
+        target="postgres",
+        span_type="db_query",
+        details={"card_id": card_id, "user_id": user_id},
+    ):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                if user_id is not None:
+                    cur.execute(
+                        "DELETE FROM payment_cards WHERE id = %s AND user_id = %s",
+                        (card_id, user_id),
+                    )
+                else:
+                    cur.execute(
+                        "DELETE FROM payment_cards WHERE id = %s",
+                        (card_id,),
+                    )
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
 
 
 def list_payment_cards(user_id=None):
     """Return payment cards, optionally filtered by owner user_id."""
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            if user_id is not None:
-                cur.execute(
-                    "SELECT * FROM payment_cards WHERE user_id = %s ORDER BY id",
-                    (user_id,),
-                )
-            else:
-                cur.execute("SELECT * FROM payment_cards ORDER BY id")
-            return [_row_to_dict(row) for row in cur.fetchall()]
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
+    with tracer.span(
+        operation="PostgreSQL: SELECT FROM payment_cards",
+        source=src,
+        target="postgres",
+        span_type="db_query",
+        details={"user_id": user_id},
+    ):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                if user_id is not None:
+                    cur.execute(
+                        "SELECT * FROM payment_cards WHERE user_id = %s ORDER BY id",
+                        (user_id,),
+                    )
+                else:
+                    cur.execute("SELECT * FROM payment_cards ORDER BY id")
+                return [_row_to_dict(row) for row in cur.fetchall()]
 
 
 def get_payment_card(card_id, name=None, user_id=None):
@@ -567,22 +646,30 @@ def get_payment_card(card_id, name=None, user_id=None):
     Optionally filtered by cardholder name and/or owner user_id.
     Returns dict or None.
     """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            conditions = ["id = %s"]
-            params = [card_id]
-            if name is not None:
-                conditions.append("cardholder_name = %s")
-                params.append(name)
-            if user_id is not None:
-                conditions.append("user_id = %s")
-                params.append(user_id)
-            where = " AND ".join(conditions)
-            cur.execute(
-                f"SELECT * FROM payment_cards WHERE {where}",  # noqa: S608
-                params,
-            )
-            return _row_to_dict(cur.fetchone())
+    src = os.environ.get("SERVICE_NAME", "orchestrator")
+    with tracer.span(
+        operation="PostgreSQL: SELECT FROM payment_cards",
+        source=src,
+        target="postgres",
+        span_type="db_query",
+        details={"card_id": card_id, "user_id": user_id},
+    ):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                conditions = ["id = %s"]
+                params = [card_id]
+                if name is not None:
+                    conditions.append("cardholder_name = %s")
+                    params.append(name)
+                if user_id is not None:
+                    conditions.append("user_id = %s")
+                    params.append(user_id)
+                where = " AND ".join(conditions)
+                cur.execute(
+                    f"SELECT * FROM payment_cards WHERE {where}",  # noqa: S608
+                    params,
+                )
+                return _row_to_dict(cur.fetchone())
 
 
 # ---------------------------------------------------------------------------
