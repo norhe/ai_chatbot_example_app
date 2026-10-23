@@ -236,7 +236,17 @@ _existing_user_client_raw=$(${KCADM} get clients \
 _existing_user_client=$(echo "${_existing_user_client_raw}" | head -1) || true
 
 if [[ -n "${_existing_user_client}" ]]; then
-    echo "    Client 'voyager-user' already exists — skipping."
+    echo "    Client 'voyager-user' already exists — updating redirect URIs and web origins..."
+    _user_client_update_out=""
+    if ! _user_client_update_out=$(${KCADM} update "clients/${_existing_user_client}" \
+            --target-realm voyager \
+            -s 'redirectUris=["http://127.0.0.1:5000/*","http://localhost:5000/*"]' \
+            -s 'webOrigins=["http://127.0.0.1:5000","http://localhost:5000"]' 2>&1); then
+        echo "ERROR: Failed to update 'voyager-user' client." >&2
+        echo "${_user_client_update_out}" >&2
+        exit 1
+    fi
+    echo "    Client 'voyager-user' redirect URIs updated."
 else
     _user_client_out=""
     if ! _user_client_out=$(${KCADM} create clients \
@@ -247,8 +257,8 @@ else
             -s standardFlowEnabled=true \
             -s directAccessGrantsEnabled=false \
             -s serviceAccountsEnabled=false \
-            -s 'redirectUris=["http://127.0.0.1:5000/*"]' \
-            -s 'webOrigins=["http://127.0.0.1:5000"]' \
+            -s 'redirectUris=["http://127.0.0.1:5000/*","http://localhost:5000/*"]' \
+            -s 'webOrigins=["http://127.0.0.1:5000","http://localhost:5000"]' \
             -s 'attributes."pkce.code.challenge.method"=S256' \
             -s 'attributes."access.token.signed.response.alg"=RS256' \
             -s 'attributes."access.token.header.type"=at+JWT' 2>&1); then
@@ -310,6 +320,17 @@ _create_demo_user() {
 
     if [[ -n "${existing_id}" ]]; then
         echo "    User '${username}' already exists — skipping creation."
+        # Ensure profile fields required by Keycloak's user profile are set,
+        # otherwise login prompts "Update Account Information".
+        if ! _upd_out=$(${KCADM} update "users/${existing_id}" \
+                --target-realm voyager \
+                -s "email=${username}@example.com" \
+                -s "firstName=${first}" \
+                -s "lastName=${last}" \
+                -s emailVerified=true \
+                -s 'requiredActions=[]' 2>&1); then
+            echo "WARNING: Failed to update profile for '${username}': ${_upd_out}" >&2
+        fi
     else
         local _user_out=""
         if ! _user_out=$(${KCADM} create users \
@@ -317,6 +338,8 @@ _create_demo_user() {
                 -s "username=${username}" \
                 -s "firstName=${first}" \
                 -s "lastName=${last}" \
+                -s "email=${username}@example.com" \
+                -s emailVerified=true \
                 -s enabled=true 2>&1); then
             echo "ERROR: Failed to create user '${username}'." >&2
             echo "${_user_out}" >&2
@@ -408,7 +431,7 @@ echo "   voyager-payment-read   : voyager-payment-read-secret"
 echo "   voyager-payment-write  : voyager-payment-write-secret"
 echo ""
 echo " User-facing client: voyager-user (public, PKCE)"
-echo "   Redirect URI: http://127.0.0.1:5000/*"
+echo "   Redirect URIs: http://127.0.0.1:5000/*  http://localhost:5000/*"
 echo ""
 echo " Realm roles: admin | bookings_admin | payments_admin | user"
 echo ""

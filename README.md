@@ -41,12 +41,12 @@ mkdir -p ./postgres-data
 
 podman run -d \
   --name voyager-postgres \
-  -e POSTGRESQL_USER=voyager \
-  -e POSTGRESQL_PASSWORD=voyager \
-  -e POSTGRESQL_DATABASE=voyager \
+  -e POSTGRES_USER=voyager \
+  -e POSTGRES_PASSWORD=voyager \
+  -e POSTGRES_DB=voyager \
   -p 127.0.0.1:5432:5432 \
-  -v "$(pwd)/postgres-data:/var/lib/pgsql/data:Z" \
-  postgres:latest
+  -v "$(pwd)/postgres-data:/var/lib/postgresql:Z" \
+  postgres:17
 ```
 
 > The `:Z` volume flag is required on SELinux-enforcing systems (Fedora, RHEL, etc.) to relabel the
@@ -371,13 +371,23 @@ POST /api/chat
                  └─ agents/payment_write_service.py    :5104 — add/update/remove_payment_card
 ```
 
-Each service:
+Each agent service:
 1. Receives the tool name and args from the **POST `/execute` request body**
 2. Reads the auth token from the **`Authorization: Bearer` request header**
-3. Validates the JWT and extracts identity via `auth_helper.require_role` (Keycloak RS256)
+3. Validates the JWT and performs a **read-only** user lookup via
+   `auth_helper.require_role` (Keycloak RS256, `provision=False`). If the user
+   row does not exist the service returns 401 — it never creates users.
 4. Dispatches to the appropriate `db.*` helper, passing `user_id` for ownership filtering
    when the caller has the `user` role
 5. Returns a JSON response (`{"result": ...}` or `{"error": "..."}`)
+
+The **orchestrator** (`app.py`) is the only component that creates user rows.
+On every authenticated request it calls `auth_helper.validate_and_identify` or
+`auth_helper.require_role` with `provision=True`, which invokes
+`db.get_or_create_user` (JIT provisioning) and requires the `voyager_orchestrator`
+Vault DB role. Schema initialisation and seeding happen separately via `python db.py`
+(run by `setup_all.sh` or manually); `app.py` no longer calls `db.init_db()` or
+`db.seed_db()` at startup.
 
 Each service also exposes `GET /health` → `{"status": "ok", "service": "<name>"}` used by
 the launcher script to verify startup.
@@ -454,10 +464,14 @@ Permission boundaries are enforced at the **PostgreSQL role level**:
 
 | Service | Vault role | PostgreSQL grants |
 |---|---|---|
-| `read_service` | `voyager_read` | SELECT on bookings |
-| `booking_mutation_service` | `voyager_booking_write` | SELECT, INSERT, UPDATE on bookings |
-| `payment_read_service` | `voyager_payment_read` | SELECT on payment_cards |
-| `payment_write_service` | `voyager_payment_write` | SELECT, INSERT, UPDATE, DELETE on payment_cards |
+| `app.py` (orchestrator) | `voyager_orchestrator` | SELECT, INSERT on users; USAGE on users_id_seq; SELECT on bookings, payment_cards |
+| `booking_read_service` | `voyager_booking_read` | SELECT on users; SELECT on bookings |
+| `booking_mutation_service` | `voyager_booking_write` | SELECT on users; SELECT, INSERT, UPDATE on bookings |
+| `payment_read_service` | `voyager_payment_read` | SELECT on users; SELECT on payment_cards |
+| `payment_write_service` | `voyager_payment_write` | SELECT on users; SELECT, INSERT, UPDATE, DELETE on payment_cards |
+
+Only `app.py` holds INSERT on `users` — agent services perform a read-only lookup
+and return 401 for any Keycloak identity that has not yet logged through the orchestrator.
 
 ### Layer 2: Keycloak OIDC + Vault Agentic IAM
 
@@ -491,14 +505,18 @@ comparison and sub-task breakdown.
 ## Project layout
 
 ```
-app.py                                  ← Flask orchestrator, tool-call loop, SSE streaming
+app.py                                  ← Flask orchestrator, tool-call loop, SSE streaming; JIT user provisioning
+auth_helper.py                          ← JWT validation + RBAC decorator; provision=True for orchestrator, False for agents
 tracer.py                               ← Trace/span collector used by the Call Visualization panel
 db.py                                   ← PostgreSQL schema, seed data, CRUD helpers (Vault-aware)
+                                          Run `python db.py` to initialise/seed the schema — app.py no longer does this.
 tools.py                                ← Ollama tool schemas + HTTP dispatcher
 tests/                                  ← Unit tests (run: uv run python -m unittest discover -s tests -t .)
+  test_auth_helper.py                   ← auth_helper provisioning/lookup + db.get_or_create_user race recovery
+  test_tools_tracing.py                 ← tools.dispatch_tool span status
 agents/
   vault_helper.py                       ← AppRole login + background token renewal (Vault helper)
-  read_service.py                       ← get_booking, list_bookings         :5101 [read-only]
+  booking_read_service.py               ← get_booking, list_bookings         :5101 [read-only]
   booking_mutation_service.py           ← create_booking, cancel_booking     :5102 [write: bookings]
   payment_read_service.py               ← list_payment_cards                 :5103 [read: payments]
   payment_write_service.py              ← add/update/remove_payment_card     :5104 [write: payments]

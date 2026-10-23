@@ -21,7 +21,7 @@
 set -euo pipefail
 
 CONTAINER_NAME="voyager-postgres"
-POSTGRES_IMAGE="docker.io/library/postgres:latest"
+POSTGRES_IMAGE="${POSTGRES_IMAGE:-docker.io/library/postgres:18}"
 
 # Resolve the repository root (one level up from this script's directory)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -80,10 +80,10 @@ else
     if ! podman run -d \
         --name "${CONTAINER_NAME}" \
         -p 127.0.0.1:5432:5432 \
-        -e POSTGRESQL_USER="${POSTGRES_USER}" \
-        -e POSTGRESQL_PASSWORD="${POSTGRES_PASSWORD}" \
-        -e POSTGRESQL_DATABASE="${POSTGRES_DB}" \
-        -v "${POSTGRES_DATA_DIR}:/var/lib/pgsql/data:Z" \
+        -e POSTGRES_USER="${POSTGRES_USER}" \
+        -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+        -e POSTGRES_DB="${POSTGRES_DB}" \
+        -v "${POSTGRES_DATA_DIR}:/var/lib/postgresql:Z" \
         "${POSTGRES_IMAGE}"; then
         # A race between 'container exists' and 'run' can leave the container
         # created-but-not-running.  If the container is now present, start it.

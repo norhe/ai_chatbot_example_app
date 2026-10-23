@@ -8,6 +8,7 @@
 #   1. setup_postgres.sh                Start PostgreSQL container, wait for readiness
 #   2. setup_keycloak_kcadm.sh          Start Keycloak, create voyager realm and clients
 #   3. keycloak_ai_vault_integration.sh  Add vault-oidc client and audience mapper to voyager realm
+#   3b. db.py                           Create tables and seed data (required before Vault roles are used)
 #   4. setup_vault.sh                   Enable database engine, roles, policies, AppRole creds
 #   5. vault_agentic_keycloak_setup.sh  Create Vault OAuth profile and agent ceiling policy
 #   6. vault_register_agents.sh         Register each service agent (entity, alias, registry)
@@ -84,6 +85,16 @@ _done "setup_keycloak_kcadm.sh"
 _step 3 "Keycloak vault-oidc client + audience mapper (voyager realm)"
 bash "${SCRIPTS_DIR}/keycloak_ai_vault_integration.sh"
 _done "keycloak_ai_vault_integration.sh"
+
+# ---------------------------------------------------------------------------
+# Step 3b — Database schema + seed data
+# Must run before setup_vault.sh: the Vault role creation statements GRANT on
+# the users/bookings/payment_cards tables, which must already exist.
+# ---------------------------------------------------------------------------
+_step "3b" "Database schema + seed data"
+export DATABASE_URL
+"${PYTHON:-python3}" "${SCRIPTS_DIR}/../db.py"
+_done "db.py (schema + seed)"
 
 # ---------------------------------------------------------------------------
 # Step 4 — Vault: database engine, roles, policies, AppRole credentials

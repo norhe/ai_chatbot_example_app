@@ -47,7 +47,7 @@ def execute():
                 destination=args["destination"],
                 origin=args["origin"],
                 travel_date=args["travel_date"],
-                return_date=args.get("return_date"),
+                return_date=args.get("return_date") or None,
                 user_id=current_user["user_id"],  # always set user_id for new bookings
             )
         except Exception as e:

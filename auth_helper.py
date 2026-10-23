@@ -1,9 +1,18 @@
 """
 auth_helper.py — Shared JWT authentication and role-based access control helper.
 
-Validates JWTs issued by Keycloak (RS256, realm_access.roles), performs JIT
-user provisioning via db.get_or_create_user, and provides a Flask decorator
-that enforces role membership and injects g.current_user.
+Validates JWTs issued by Keycloak (RS256, realm_access.roles) and provides a
+Flask decorator that enforces role membership and injects g.current_user.
+
+By default (``provision=False``) both ``validate_and_identify`` and
+``require_role`` perform a **read-only** lookup of the user row by
+``keycloak_sub`` (via ``db.get_user_by_sub``).  A missing user returns ``None``
+and ``require_role`` responds with 401.  This is the correct mode for all
+agent services.
+
+Only the orchestrator (``app.py``) passes ``provision=True`` so that a new
+Keycloak user is automatically inserted on first login via
+``db.get_or_create_user``.
 
 Configuration (environment variables)
 --------------------------------------
@@ -74,12 +83,26 @@ def _get_jwks() -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def validate_and_identify(token: str, service_name: Optional[str] = None) -> Optional[dict]:
+def validate_and_identify(
+    token: str,
+    service_name: Optional[str] = None,
+    provision: bool = False,
+) -> Optional[dict]:
     """Decode and validate a Keycloak JWT.
 
     Returns a dict:
         {"user_id": int, "sub": str, "username": str, "role": str}
-    on success, or None on any failure (expired, bad signature, missing claims, …).
+    on success, or None on any failure (expired, bad signature, missing claims,
+    unknown user, …).
+
+    Args:
+        token:        Raw bearer token (without the "Bearer " prefix).
+        service_name: Optional service name for trace spans; defaults to the
+                      SERVICE_NAME environment variable or "orchestrator".
+        provision:    When True, call db.get_or_create_user so a new Keycloak
+                      user is inserted on first login (orchestrator only).
+                      When False (default), call db.get_user_by_sub instead;
+                      a missing user returns None and the caller should 401.
 
     Never logs the token value itself.
     """
@@ -196,21 +219,61 @@ def validate_and_identify(token: str, service_name: Optional[str] = None) -> Opt
             )
         return None
 
-    try:
-        user = db.get_or_create_user(sub, username, role)
-    except Exception as exc:
-        logger.warning('{"event": "jwt_user_provision_failed", "reason": "%s"}', type(exc).__name__)
-        if collector:
-            collector.record(
-                source=src,
-                target="keycloak",
-                operation="JIT User Provisioning",
-                span_type="oidc_auth",
-                duration_ms=(time.monotonic() - start_time) * 1000.0,
-                status="error",
-                details={"error": str(exc), "sub": sub, "username": username, "role": role},
+    if provision:
+        try:
+            user = db.get_or_create_user(sub, username, role)
+        except Exception as exc:
+            logger.warning('{"event": "jwt_user_provision_failed", "reason": "%s"}', type(exc).__name__)
+            if collector:
+                collector.record(
+                    source=src,
+                    target="keycloak",
+                    operation="JIT User Provisioning",
+                    span_type="oidc_auth",
+                    duration_ms=(time.monotonic() - start_time) * 1000.0,
+                    status="error",
+                    details={"error": str(exc), "sub": sub, "username": username, "role": role},
+                )
+            return None
+    else:
+        try:
+            user = db.get_user_by_sub(sub)
+        except Exception as exc:
+            logger.warning('{"event": "jwt_user_lookup_failed", "reason": "%s"}', type(exc).__name__)
+            if collector:
+                collector.record(
+                    source=src,
+                    target="keycloak",
+                    operation="User Lookup",
+                    span_type="oidc_auth",
+                    duration_ms=(time.monotonic() - start_time) * 1000.0,
+                    status="error",
+                    details={"error": str(exc), "sub": sub, "username": username, "role": role},
+                )
+            return None
+
+        if user is None:
+            logger.error(
+                '{"event": "user_not_provisioned", "reason": "sub not found in users table",'
+                ' "sub": "%s", "username": "%s", "role": "%s"}',
+                sub, username, role,
             )
-        return None
+            if collector:
+                collector.record(
+                    source=src,
+                    target="keycloak",
+                    operation="User Lookup",
+                    span_type="oidc_auth",
+                    duration_ms=(time.monotonic() - start_time) * 1000.0,
+                    status="error",
+                    details={
+                        "error": "User not provisioned",
+                        "sub": sub,
+                        "username": username,
+                        "role": role,
+                    },
+                )
+            return None
 
     duration_ms = (time.monotonic() - start_time) * 1000.0
     if collector:
@@ -240,14 +303,21 @@ def validate_and_identify(token: str, service_name: Optional[str] = None) -> Opt
     }
 
 
-def require_role(*allowed_roles: str):
+def require_role(*allowed_roles: str, provision: bool = False):
     """Flask decorator — validate the bearer token and enforce role membership.
 
     On success, sets flask.g.current_user to the dict returned by
     validate_and_identify and calls the wrapped view function.
 
+    Args:
+        *allowed_roles: Role names that are permitted to call the view.
+        provision:      Passed through to validate_and_identify.  Set to True
+                        only on orchestrator routes so new Keycloak users are
+                        provisioned on first login.  Defaults to False
+                        (read-only lookup; missing user → 401).
+
     Returns:
-        401 JSON  — missing or invalid token
+        401 JSON  — missing or invalid token, or user not in users table
         403 JSON  — valid token but role not in allowed_roles
     """
     def decorator(fn):
@@ -267,7 +337,7 @@ def require_role(*allowed_roles: str):
             try:
                 auth_header = request.headers.get("Authorization", "")
                 token = auth_header.removeprefix("Bearer ").strip()
-                user = validate_and_identify(token)
+                user = validate_and_identify(token, provision=provision)
                 if user is None:
                     return jsonify({"error": "Unauthorized"}), 401
                 if user["role"] not in allowed_roles:

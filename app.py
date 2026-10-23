@@ -12,6 +12,7 @@ import tools
 import tracer
 import auth_helper
 from auth_helper import require_role
+from agents.vault_helper import vault_approle_login, start_token_renewal
 
 _LOG_LEVEL = logging.DEBUG if os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes") else logging.INFO
 logging.basicConfig(
@@ -24,9 +25,6 @@ if _LOG_LEVEL == logging.DEBUG:
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 CORS(app, resources={r"/api/*": {"origins": "http://localhost:5000"}})
-
-db.init_db()
-db.seed_db()
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:latest")
@@ -120,7 +118,7 @@ def chat():
         tracer_token = tracer.set_current_collector(collector)
         try:
             today = date.today().isoformat()
-            user_info = auth_helper.validate_and_identify(bearer_token)
+            user_info = auth_helper.validate_and_identify(bearer_token, provision=True)
             username = user_info["username"] if user_info else "unknown"
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT.format(date=today, username=username)}
@@ -290,7 +288,7 @@ def chat():
 
 
 @app.route("/api/bookings", methods=["GET"])
-@require_role("admin", "bookings_admin", "user")
+@require_role("admin", "bookings_admin", "user", provision=True)
 def get_bookings():
     current_user = g.current_user
     user_id = current_user["user_id"] if current_user["role"] == "user" else None
@@ -301,7 +299,7 @@ def get_bookings():
 
 
 @app.route("/api/payment-cards", methods=["GET"])
-@require_role("admin", "payments_admin", "user")
+@require_role("admin", "payments_admin", "user", provision=True)
 def get_payment_cards():
     current_user = g.current_user
     user_id = current_user["user_id"] if current_user["role"] == "user" else None
@@ -311,5 +309,29 @@ def get_payment_cards():
     return jsonify({"cards": cards, "traces": traces})
 
 
+def _init_vault() -> None:
+    """Authenticate to Vault using AppRole creds from the environment.
+
+    Skips setup and falls back to DATABASE_URL if any required env var is
+    absent (allows running the orchestrator without Vault for local development).
+    """
+    role_id    = os.environ.get("VAULT_ROLE_ID")
+    secret_id  = os.environ.get("VAULT_SECRET_ID")
+    vault_addr = os.environ.get("VAULT_ADDR")
+
+    if not (role_id and secret_id and vault_addr):
+        logger.warning(
+            '{"event": "vault_init_skipped", "reason": "VAULT_ROLE_ID/VAULT_SECRET_ID/VAULT_ADDR not set — falling back to DATABASE_URL"}'
+        )
+        return
+
+    client = vault_approle_login(role_id, secret_id)
+    os.environ["VAULT_TOKEN"]   = client.token
+    os.environ["VAULT_DB_ROLE"] = "voyager_orchestrator"
+    start_token_renewal(client, logger)
+    logger.info('{"event": "vault_init_complete", "db_role": "voyager_orchestrator"}')
+
+
 if __name__ == "__main__":
+    _init_vault()
     app.run(host="127.0.0.1", port=5000, debug=False)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # setup_vault.sh — One-shot idempotent Vault configuration for Voyager Travel demo.
-# Configures the database secrets engine, four scoped Vault roles + policies,
-# and AppRole credentials for each microservice.
+# Configures the database secrets engine, five scoped Vault roles + policies,
+# and AppRole credentials for each microservice (including the orchestrator).
 #
 # Prerequisites:
 #   - A Vault dev-mode server running and reachable
@@ -10,6 +10,9 @@
 #   - DATABASE_URL set (default: postgresql://voyager:voyager@127.0.0.1:5432/voyager)
 #
 # Usage: ./setup_vault.sh
+#
+# NOTE: Re-running this script is required after adding the voyager_orchestrator role.
+# Already-issued short-lived leases keep their old grants until they expire (default TTL 1h).
 
 set -euo pipefail
 
@@ -57,7 +60,7 @@ _db_cfg_out=""
 if ! _db_cfg_out=$(vault write -format=json database/config/voyager-postgres \
         plugin_name=postgresql-database-plugin \
         connection_url="${DATABASE_URL}" \
-        allowed_roles="voyager_booking_read,voyager_booking_write,voyager_payment_read,voyager_payment_write" \
+        allowed_roles="voyager_orchestrator,voyager_booking_read,voyager_booking_write,voyager_payment_read,voyager_payment_write" \
         2>&1); then
     echo "ERROR: Failed to configure voyager-postgres database connection." >&2
     echo "${_db_cfg_out}" >&2
@@ -66,7 +69,7 @@ fi
 echo "    voyager-postgres connection configured."
 
 # ---------------------------------------------------------------------------
-# 3. Write the four database roles
+# 3. Write the five database roles
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Writing database roles..."
@@ -86,19 +89,26 @@ _write_db_role() {
     fi
 }
 
-_write_db_role "voyager_booking_read" \
-    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT ON users TO \"{{name}}\"; GRANT SELECT ON bookings TO \"{{name}}\";"
-_write_db_role "voyager_booking_write" \
-    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT ON users TO \"{{name}}\"; GRANT SELECT, INSERT, UPDATE ON bookings TO \"{{name}}\";"
-_write_db_role "voyager_payment_read" \
-    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT ON users TO \"{{name}}\"; GRANT SELECT ON payment_cards TO \"{{name}}\";"
-_write_db_role "voyager_payment_write" \
-    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT ON users TO \"{{name}}\"; GRANT SELECT, INSERT, UPDATE, DELETE ON payment_cards TO \"{{name}}\";"
+# Orchestrator: SELECT + INSERT on users (for JIT provisioning), USAGE on
+# users_id_seq (required for SERIAL column INSERT), SELECT on bookings and
+# payment_cards (for the REST endpoints).
+_write_db_role "voyager_orchestrator" \
+    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT ON users TO \"{{name}}\"; GRANT USAGE ON SEQUENCE users_id_seq TO \"{{name}}\"; GRANT SELECT ON bookings TO \"{{name}}\"; GRANT SELECT ON payment_cards TO \"{{name}}\";"
 
-echo "    Four database roles written."
+# Agent services: SELECT only on users (read-only identity lookup).
+_write_db_role "voyager_booking_read" \
+    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON users TO \"{{name}}\"; GRANT SELECT ON bookings TO \"{{name}}\";"
+_write_db_role "voyager_booking_write" \
+    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON users TO \"{{name}}\"; GRANT SELECT, INSERT, UPDATE ON bookings TO \"{{name}}\"; GRANT USAGE ON SEQUENCE bookings_id_seq TO \"{{name}}\";"
+_write_db_role "voyager_payment_read" \
+    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON users TO \"{{name}}\"; GRANT SELECT ON payment_cards TO \"{{name}}\";"
+_write_db_role "voyager_payment_write" \
+    "CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON users TO \"{{name}}\"; GRANT SELECT, INSERT, UPDATE, DELETE ON payment_cards TO \"{{name}}\";"
+
+echo "    Five database roles written."
 
 # ---------------------------------------------------------------------------
-# 4. Write the four Vault policies
+# 4. Write the five Vault policies
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Writing Vault policies..."
@@ -113,12 +123,13 @@ _write_policy() {
     fi
 }
 
+_write_policy "voyager-orchestrator-policy"  'path "database/creds/voyager_orchestrator"  { capabilities = ["read"] }'
 _write_policy "voyager-booking-read-policy"  'path "database/creds/voyager_booking_read"  { capabilities = ["read"] }'
 _write_policy "voyager-booking-write-policy" 'path "database/creds/voyager_booking_write" { capabilities = ["read"] }'
 _write_policy "voyager-payment-read-policy"  'path "database/creds/voyager_payment_read"  { capabilities = ["read"] }'
 _write_policy "voyager-payment-write-policy" 'path "database/creds/voyager_payment_write" { capabilities = ["read"] }'
 
-echo "    Four policies written."
+echo "    Five policies written."
 
 # ---------------------------------------------------------------------------
 # 5. Enable AppRole auth method (idempotent)
@@ -185,6 +196,7 @@ _write_approle_creds() {
     echo "    ${creds_file} written."
 }
 
+_write_approle_creds "voyager-orchestrator"   "voyager-orchestrator-policy"  "orchestrator"
 _write_approle_creds "voyager-booking-read"   "voyager-booking-read-policy"  "booking_read_service"
 _write_approle_creds "voyager-booking-write"  "voyager-booking-write-policy" "booking_mutation_service"
 _write_approle_creds "voyager-payment-read"   "voyager-payment-read-policy"  "payment_read_service"

@@ -4,7 +4,8 @@
 # Prerequisites:
 #   - Vault dev server running; setup_vault.sh already executed
 #   - DATABASE_URL set in the environment
-#   - vault_approle_creds/<service>.env files present (written by setup_vault.sh)
+#   - vault_approle_creds/<service>.env files present (written by setup_vault.sh),
+#     including scripts/vault_approle_creds/orchestrator.env for the orchestrator
 #
 # Usage: ./start_app.sh
 
@@ -87,9 +88,25 @@ BOOKING_WRITE_PID=""
 PAYMENT_READ_PID=""
 PAYMENT_WRITE_PID=""
 
-# Orchestrator (app.py) — uses DATABASE_URL directly; no Vault role needed
-python3 app.py &
-ORCHESTRATOR_PID=$!
+_launch_orchestrator() {
+    local -n _pid_ref="$1"
+    local creds_file="scripts/vault_approle_creds/orchestrator.env"
+
+    if [[ ! -f "${creds_file}" ]]; then
+        echo "WARNING: ${creds_file} not found — orchestrator will fall back to DATABASE_URL." >&2
+        python3 app.py &
+    else
+        # shellcheck source=/dev/null
+        set -a
+        source "${creds_file}"
+        set +a
+        export VAULT_ADDR DB_HOST DB_PORT DB_NAME DATABASE_URL
+        python3 app.py &
+    fi
+    _pid_ref=$!
+}
+
+_launch_orchestrator ORCHESTRATOR_PID
 
 _launch_service "booking_read_service"     "agents/booking_read_service.py"     "BOOKING_READ_SERVICE_PORT=${BOOKING_READ_SERVICE_PORT}"    BOOKING_READ_PID
 _launch_service "booking_mutation_service" "agents/booking_mutation_service.py" "BOOKING_WRITE_SERVICE_PORT=${BOOKING_WRITE_SERVICE_PORT}" BOOKING_WRITE_PID

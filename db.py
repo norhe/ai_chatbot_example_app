@@ -303,22 +303,25 @@ def seed_users_from_env():
     with get_connection() as conn:
         with conn.cursor() as cur:
             for (real_sub, username, role, placeholder_sub) in updates:
-                # Insert with real sub; if placeholder already exists, update it
+                # Re-key the placeholder row in place so existing bookings and
+                # payment_cards (which reference users.id) stay attached.
                 cur.execute(
-                    """
-                    INSERT INTO users (keycloak_sub, username, role)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (keycloak_sub) DO UPDATE
-                        SET username = EXCLUDED.username,
-                            role     = EXCLUDED.role
-                    """,
-                    (real_sub, username, role),
+                    "UPDATE users SET keycloak_sub = %s, username = %s, role = %s "
+                    "WHERE keycloak_sub = %s",
+                    (real_sub, username, role, placeholder_sub),
                 )
-                # Remove the placeholder row if it's different from real_sub
-                cur.execute(
-                    "DELETE FROM users WHERE keycloak_sub = %s AND keycloak_sub != %s",
-                    (placeholder_sub, real_sub),
-                )
+                if cur.rowcount == 0:
+                    # Placeholder already replaced (re-run) or never existed
+                    cur.execute(
+                        """
+                        INSERT INTO users (keycloak_sub, username, role)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (keycloak_sub) DO UPDATE
+                            SET username = EXCLUDED.username,
+                                role     = EXCLUDED.role
+                        """,
+                        (real_sub, username, role),
+                    )
         conn.commit()
     print(f"Updated {len(updates)} demo user sub UUIDs.")
 
@@ -330,11 +333,17 @@ def seed_users_from_env():
 def get_or_create_user(keycloak_sub: str, username: str, role: str) -> dict:
     """Return the users row for the given Keycloak sub, creating it if absent.
 
-    Used by auth_helper for JIT provisioning on first login.
+    Used only by the orchestrator for JIT provisioning on first login.
+    Does not sync username or role for existing users.
     Returns a plain dict with keys: id, keycloak_sub, username, role, created_at.
+
+    Uses SELECT → INSERT ON CONFLICT DO NOTHING → re-SELECT so that no UPDATE
+    privilege is required on the users table.  A concurrent first-login race
+    yields the same row for both callers.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
+            # Fast path: user already exists
             cur.execute(
                 "SELECT * FROM users WHERE keycloak_sub = %s",
                 (keycloak_sub,),
@@ -343,20 +352,52 @@ def get_or_create_user(keycloak_sub: str, username: str, role: str) -> dict:
             if row:
                 return _row_to_dict(row)
 
+            # Slow path: try to insert; ignore a concurrent insert
             cur.execute(
                 """
                 INSERT INTO users (keycloak_sub, username, role)
                 VALUES (%s, %s, %s)
-                ON CONFLICT (keycloak_sub) DO UPDATE
-                    SET username = EXCLUDED.username,
-                        role     = EXCLUDED.role
+                ON CONFLICT (keycloak_sub) DO NOTHING
                 RETURNING *
                 """,
                 (keycloak_sub, username, role),
             )
-            user = _row_to_dict(cur.fetchone())
+            row = cur.fetchone()
+            if row:
+                conn.commit()
+                return _row_to_dict(row)
+
+            # Lost the race — re-SELECT the row the winner inserted
+            cur.execute(
+                "SELECT * FROM users WHERE keycloak_sub = %s",
+                (keycloak_sub,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError(
+                    f"get_or_create_user: INSERT returned nothing and re-SELECT"
+                    f" found no row for sub={keycloak_sub!r}"
+                )
         conn.commit()
-    return user
+    return _row_to_dict(row)
+
+
+def get_user_by_sub(keycloak_sub: str):
+    """Return the users row for the given Keycloak sub, or None if absent.
+
+    Used by agent services for read-only identity lookup after JWT validation.
+    Never inserts or updates.
+    Returns a plain dict with keys: id, keycloak_sub, username, role, created_at,
+    or None when no matching row exists.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM users WHERE keycloak_sub = %s",
+                (keycloak_sub,),
+            )
+            row = cur.fetchone()
+    return _row_to_dict(row)
 
 
 # ---------------------------------------------------------------------------

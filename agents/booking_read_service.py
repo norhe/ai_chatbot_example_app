@@ -4,7 +4,7 @@ os.environ.setdefault("SERVICE_NAME", "booking_read_service")
 import db
 import tracer
 from flask import Flask, request, jsonify, g
-from auth_helper import require_role, validate_and_identify
+from auth_helper import require_role
 from vault_helper import vault_approle_login, start_token_renewal
 
 _debug = os.environ.get("DEBUG", "").strip("\"'").lower() in ("1", "true", "yes")
