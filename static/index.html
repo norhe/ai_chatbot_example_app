@@ -287,6 +287,8 @@
       justify-content: space-between;
       flex-shrink: 0;
       gap: .5rem;
+      position: relative;
+      z-index: 10;
     }
 
     .sidebar-tabs {
@@ -467,6 +469,83 @@
       justify-content: space-between;
       gap: .5rem;
       flex-shrink: 0;
+      position: relative;
+      z-index: 10;
+    }
+
+    /* ── Demo info badge & tooltip ── */
+    .demo-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .25rem;
+      background: rgba(232, 160, 32, 0.18);
+      color: var(--brand-accent);
+      border: 1px solid rgba(232, 160, 32, 0.6);
+      border-radius: 12px;
+      font-size: .68rem;
+      font-weight: 600;
+      padding: .15rem .45rem;
+      cursor: help;
+      position: relative;
+      user-select: none;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .demo-badge:hover,
+    .demo-badge:focus-visible {
+      background: rgba(232, 160, 32, 0.28);
+      border-color: var(--brand-accent);
+      outline: none;
+    }
+    .demo-badge:focus-visible {
+      box-shadow: 0 0 0 2px var(--brand-accent);
+    }
+    .demo-badge .demo-tooltip {
+      visibility: hidden;
+      opacity: 0;
+      position: absolute;
+      top: calc(100% + 8px);
+      background: #0f172a;
+      color: #f1f5f9;
+      border: 1px solid #334155;
+      padding: .55rem .7rem;
+      border-radius: 6px;
+      font-size: .72rem;
+      font-weight: 400;
+      line-height: 1.4;
+      white-space: normal;
+      width: 240px;
+      z-index: 100;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+      pointer-events: none;
+      transition: opacity .15s ease, visibility .15s ease;
+    }
+    .demo-badge:hover .demo-tooltip,
+    .demo-badge:focus-within .demo-tooltip,
+    .demo-badge:focus .demo-tooltip {
+      visibility: visible;
+      opacity: 1;
+    }
+    .demo-badge .demo-tooltip::before {
+      content: "";
+      position: absolute;
+      top: -5px;
+      right: 12px;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-bottom: 5px solid #334155;
+    }
+    .viz-header .demo-badge .demo-tooltip {
+      right: 0;
+      left: auto;
+      transform: none;
+      width: 250px;
+    }
+    .sidebar-header .demo-badge .demo-tooltip {
+      right: 0;
+      left: auto;
+      transform: none;
+      width: 230px;
     }
     .viz-tabs { display: flex; gap: .35rem; }
     .viz-tab {
@@ -1353,6 +1432,12 @@
         <button class="viz-tab" role="tab" id="viz-tab-timeline" data-viz-tab="timeline"
                 aria-selected="false" aria-controls="viz-pane-timeline" tabindex="-1">Sequence &amp; Trace</button>
       </div>
+      <span class="demo-badge" tabindex="0" role="note" aria-label="Demo view information for call trace">
+        ⓘ Demo View
+        <span class="demo-tooltip" role="tooltip">
+          <strong>Demonstration Only</strong>: In a real app, live tracing of backend auth, Vault exchanges, DB queries, and service calls is handled behind the scenes and sent to observability tools (e.g. OpenTelemetry / Jaeger). It is shown here to visualize live agent operations.
+        </span>
+      </span>
       <button id="viz-close-btn" title="Hide visualization panel" aria-label="Hide visualization panel">✕</button>
     </div>
     <div class="viz-controls" role="toolbar" aria-label="Trace controls">
@@ -1663,6 +1748,12 @@
         <button class="sidebar-tab active" data-tab="bookings">Bookings</button>
         <button class="sidebar-tab" data-tab="cards">Cards</button>
       </div>
+      <span class="demo-badge" tabindex="0" role="note" aria-label="Demo view information for database state">
+        ⓘ Demo View
+        <span class="demo-tooltip" role="tooltip">
+          <strong>Demonstration Only</strong>: In a real app, database records are not displayed side-by-side with the chat interface. This panel is provided for demonstration purposes so you can directly observe database mutations and state changes resulting from chatbot actions.
+        </span>
+      </span>
       <div class="sidebar-actions">
         <button id="refresh-btn" title="Refresh">↺</button>
         <button id="sidebar-toggle" title="Hide sidebar">✕</button>
