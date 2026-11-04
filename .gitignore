@@ -30,10 +30,10 @@ ENV/
 *.log
 
 # test db
-./postgres-data
+postgres-data/
 # Service runtime artifacts
-services/pids/
-services/logs/
+**/services/pids/
+**/services/logs/
 
 # Vault AppRole credential files — never commit
 vault_approle_creds/

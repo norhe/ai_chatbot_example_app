@@ -1,0 +1,13 @@
+[project]
+name = "voyager-travel-chatbot"
+version = "0.1.0"
+description = "Voyager Travel AI booking assistant — Ollama + Flask + PostgreSQL"
+requires-python = ">=3.12"
+dependencies = [
+    "flask==3.1.1",
+    "flask-cors==5.0.1",
+    "requests==2.32.3",
+    "psycopg2-binary==2.9.12",
+    "hvac>=2.3.0",
+]
+

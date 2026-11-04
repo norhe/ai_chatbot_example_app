@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voyager Travel — AI Assistant</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Brand tokens ── */
+    :root {
+      --brand-primary: #0057a8;
+      --brand-accent:  #e8a020;
+      --brand-dark:    #00264d;
+      --brand-light:   #e8f1fb;
+    }
+
+    body {
+      font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+      background: #f0f4f9;
+      color: #1f2328;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      width: 100%;
+      background: var(--brand-dark);
+      color: #fff;
+      padding: 0 1.25rem;
+      height: 62px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      border-bottom: 3px solid var(--brand-accent);
+    }
+
+    .header-brand { display: flex; align-items: center; gap: .65rem; }
+
+    .brand-logo { width: 34px; height: 34px; flex-shrink: 0; }
+
+    .brand-text { display: flex; flex-direction: column; line-height: 1.2; }
+    .brand-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+      color: #fff;
+    }
+    .brand-tagline {
+      font-size: .62rem;
+      font-weight: 400;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--brand-accent);
+    }
+
+    .header-right { display: flex; align-items: center; gap: .6rem; }
+    .header-label {
+      font-size: .72rem;
+      color: #7da8cc;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    #model-select {
+      background: #003a73;
+      color: #cdd9e5;
+      border: 1px solid var(--brand-primary);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: .85rem;
+      cursor: pointer;
+      outline: none;
+    }
+    #model-select:focus { border-color: var(--brand-accent); }
+
+    #show-sidebar-btn {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: #003a73;
+      border: 1px solid var(--brand-primary);
+      border-radius: 6px;
+      color: #cdd9e5;
+      font-size: .9rem;
+      width: 32px;
+      height: 32px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+      title: "Show sidebar";
+    }
+    #show-sidebar-btn:hover { background: var(--brand-primary); }
+
+    /* ── Welcome banner ── */
+    #welcome-banner {
+      width: 100%;
+      max-width: 760px;
+      margin: 1.25rem auto 0;
+      padding: .85rem 1.1rem;
+      background: var(--brand-light);
+      border: 1px solid #c2d8f0;
+      border-left: 4px solid var(--brand-primary);
+      border-radius: 8px;
+      font-size: .87rem;
+      color: #0a3a6e;
+      line-height: 1.55;
+      flex-shrink: 0;
+    }
+    #welcome-banner strong { color: var(--brand-primary); }
+
+    /* ── App layout ── */
+    .app-layout {
+      display: flex;
+      flex: 1;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    /* ── Main panel ── */
+    .main-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      align-items: center;
+    }
+
+    /* ── Chat window ── */
+    #chat-window {
+      flex: 1;
+      width: 100%;
+      max-width: 760px;
+      overflow-y: auto;
+      padding: 1.5rem 1rem 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: .75rem;
+    }
+
+    .bubble-row {
+      display: flex;
+      gap: .6rem;
+      align-items: flex-end;
+    }
+    .bubble-row.user { flex-direction: row-reverse; }
+
+    .avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .75rem;
+      font-weight: 700;
+      color: #fff;
+    }
+    .avatar.assistant { background: var(--brand-primary); }
+    .avatar.user       { background: var(--brand-accent); color: var(--brand-dark); }
+
+    .bubble {
+      max-width: 72%;
+      padding: .6rem .9rem;
+      border-radius: 14px;
+      line-height: 1.6;
+      font-size: .92rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .bubble.assistant {
+      background: #fff;
+      border: 1px solid #d4e4f7;
+      border-bottom-left-radius: 4px;
+    }
+    .bubble.user {
+      background: var(--brand-primary);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    /* typing dots */
+    .typing-dots span {
+      display: inline-block;
+      width: 7px; height: 7px;
+      margin: 0 2px;
+      background: #aaa;
+      border-radius: 50%;
+      animation: blink 1.2s infinite both;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: .2s; }
+    .typing-dots span:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink {
+      0%, 80%, 100% { opacity: .2; transform: scale(.8); }
+      40%           { opacity: 1;  transform: scale(1);   }
+    }
+
+    .error-msg {
+      color: #d73a49;
+      font-size: .85rem;
+      text-align: center;
+      padding: .4rem;
+    }
+
+    /* ── Input bar ── */
+    #input-area {
+      width: 100%;
+      max-width: 760px;
+      padding: .75rem 1rem 1rem;
+      display: flex;
+      gap: .5rem;
+      align-items: flex-end;
+      flex-shrink: 0;
+    }
+
+    #user-input {
+      flex: 1;
+      resize: none;
+      border: 1px solid #d0d7de;
+      border-radius: 10px;
+      padding: .6rem .85rem;
+      font-size: .95rem;
+      font-family: inherit;
+      line-height: 1.5;
+      outline: none;
+      max-height: 160px;
+      overflow-y: auto;
+      background: #fff;
+      transition: border-color .15s;
+    }
+    #user-input:focus { border-color: var(--brand-primary); }
+    #user-input::placeholder { color: #8c959f; }
+
+    #send-btn {
+      flex-shrink: 0;
+      width: 40px; height: 40px;
+      border: none;
+      border-radius: 10px;
+      background: var(--brand-primary);
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background .15s, opacity .15s;
+    }
+    #send-btn:disabled { opacity: .45; cursor: not-allowed; }
+    #send-btn:hover:not(:disabled) { background: #003f80; }
+    #send-btn svg { width: 18px; height: 18px; fill: currentColor; }
+
+    #clear-btn {
+      flex-shrink: 0;
+      height: 40px;
+      padding: 0 .8rem;
+      border: 1px solid #d0d7de;
+      border-radius: 10px;
+      background: #fff;
+      color: #57606a;
+      font-size: .82rem;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    #clear-btn:hover { background: #f6f8fa; }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 280px;
+      flex-shrink: 0;
+      border-left: 1px solid #e5e7eb;
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+      overflow: hidden;
+    }
+    .sidebar.sidebar--hidden { display: none; }
+
+    .sidebar-header {
+      background: var(--brand-dark);
+      color: #fff;
+      padding: 0.6rem 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      gap: .5rem;
+    }
+
+    .sidebar-tabs {
+      display: flex;
+      gap: .35rem;
+    }
+
+    .sidebar-tab {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 20px;
+      color: #cdd9e5;
+      font-size: .78rem;
+      font-weight: 500;
+      padding: .25rem .7rem;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .sidebar-tab:hover { background: rgba(255,255,255,0.1); color: #fff; }
+    .sidebar-tab.active {
+      background: var(--brand-primary);
+      border-color: var(--brand-primary);
+      color: #fff;
+    }
+
+    .sidebar-actions {
+      display: flex;
+      align-items: center;
+      gap: .3rem;
+    }
+
+    .sidebar-actions button {
+      background: transparent;
+      border: none;
+      color: #7da8cc;
+      font-size: 1rem;
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+    }
+    .sidebar-actions button:hover { color: #fff; background: rgba(255,255,255,0.1); }
+
+    .sidebar-content {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .sidebar-content.hidden { display: none; }
+
+    /* ── Booking cards ── */
+    .booking-card {
+      border-bottom: 1px solid #e5e7eb;
+      padding: 0.65rem 0.75rem;
+    }
+
+    .booking-ref {
+      font-size: .78rem;
+      font-weight: 700;
+      color: var(--brand-primary);
+      letter-spacing: .03em;
+    }
+
+    .booking-passenger {
+      font-size: .85rem;
+      color: #1f2328;
+      margin-top: .12rem;
+    }
+
+    .booking-route {
+      font-size: .78rem;
+      color: #57606a;
+      margin-top: .18rem;
+    }
+
+    .booking-date {
+      font-size: .78rem;
+      color: #57606a;
+      margin-top: .1rem;
+    }
+
+    .booking-footer {
+      margin-top: .3rem;
+      display: flex;
+      align-items: center;
+      gap: .4rem;
+    }
+
+    .status-badge {
+      display: inline-block;
+      font-size: .7rem;
+      font-weight: 600;
+      padding: .1rem .45rem;
+      border-radius: 20px;
+      letter-spacing: .02em;
+    }
+    .status-badge.confirmed { background: #dcfce7; color: #166534; }
+    .status-badge.cancelled { background: #fee2e2; color: #991b1b; }
+    .status-badge.pending   { background: #fef3c7; color: #92400e; }
+
+    /* ── Payment card entries ── */
+    .card-entry {
+      border-bottom: 1px solid #e5e7eb;
+      padding: 0.65rem 0.75rem;
+    }
+
+    .card-label {
+      font-size: .85rem;
+      font-weight: 700;
+      color: #1f2328;
+    }
+
+    .card-holder {
+      font-size: .82rem;
+      color: #1f2328;
+      margin-top: .1rem;
+    }
+
+    .card-expiry {
+      font-size: .78rem;
+      color: #57606a;
+      margin-top: .1rem;
+    }
+
+    /* ── Sidebar empty state ── */
+    .sidebar-empty {
+      padding: 1.25rem .75rem;
+      font-size: .82rem;
+      color: #57606a;
+      text-align: center;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 700px) {
+      #welcome-banner { margin: .75rem .75rem 0; }
+      .sidebar { width: 100%; position: absolute; top: 65px; right: 0; bottom: 0; z-index: 10; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-brand">
+    <!-- Voyager plane mark -->
+    <svg class="brand-logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="32" cy="32" r="32" fill="#003a73"/>
+      <!-- globe lines -->
+      <circle cx="32" cy="32" r="20" fill="none" stroke="#1a6bbf" stroke-width="1.5"/>
+      <ellipse cx="32" cy="32" rx="10" ry="20" fill="none" stroke="#1a6bbf" stroke-width="1.5"/>
+      <line x1="12" y1="32" x2="52" y2="32" stroke="#1a6bbf" stroke-width="1.5"/>
+      <!-- paper-plane -->
+      <path d="M18 32 L46 20 L38 32 L46 44 Z" fill="#e8a020"/>
+      <path d="M38 32 L28 36 L18 32" fill="#c07010"/>
+    </svg>
+    <div class="brand-text">
+      <span class="brand-name">VOYAGER TRAVEL</span>
+      <span class="brand-tagline">Your Journey, Our Expertise</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="header-label">Model</span>
+    <select id="model-select" title="Choose model" aria-label="Choose model"></select>
+    <button id="show-sidebar-btn" title="Show sidebar" aria-label="Show sidebar">☰</button>
+  </div>
+</header>
+
+<div id="welcome-banner">
+  <strong>Welcome to the Voyager Travel AI Assistant.</strong>
+  Ask me anything about flights, hotel bookings, travel policies, expense reports, or trip planning.
+</div>
+
+<div class="app-layout">
+  <div class="main-panel">
+    <div id="chat-window" role="log" aria-live="polite" aria-label="Chat messages"></div>
+
+    <div id="input-area">
+      <textarea
+        id="user-input"
+        rows="1"
+        placeholder="Ask about flights, hotels, travel policy…"
+        aria-label="Message input"
+      ></textarea>
+      <button id="clear-btn" title="Clear conversation">Clear</button>
+      <button id="send-btn" title="Send message" aria-label="Send">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-tabs">
+        <button class="sidebar-tab active" data-tab="bookings">Bookings</button>
+        <button class="sidebar-tab" data-tab="cards">Cards</button>
+      </div>
+      <div class="sidebar-actions">
+        <button id="refresh-btn" title="Refresh">↺</button>
+        <button id="sidebar-toggle" title="Hide sidebar">✕</button>
+      </div>
+    </div>
+    <div class="sidebar-content" id="tab-bookings">
+      <!-- booking cards rendered here -->
+    </div>
+    <div class="sidebar-content hidden" id="tab-cards">
+      <!-- payment card entries rendered here -->
+    </div>
+  </aside>
+</div>
+
+<script>
+  const chatWindow     = document.getElementById("chat-window");
+  const userInput      = document.getElementById("user-input");
+  const sendBtn        = document.getElementById("send-btn");
+  const clearBtn       = document.getElementById("clear-btn");
+  const modelSelect    = document.getElementById("model-select");
+  const sidebar        = document.getElementById("sidebar");
+  const showSidebarBtn = document.getElementById("show-sidebar-btn");
+
+  let conversationHistory = [];
+  let isStreaming = false;
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  function scrollToBottom() {
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+  }
+
+  function createBubble(role) {
+    const row    = document.createElement("div");
+    row.className = `bubble-row ${role}`;
+
+    const avatar  = document.createElement("div");
+    avatar.className = `avatar ${role}`;
+    avatar.textContent = role === "user" ? "You" : "AI";
+
+    const bubble  = document.createElement("div");
+    bubble.className = `bubble ${role}`;
+
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    chatWindow.appendChild(row);
+    scrollToBottom();
+    return bubble;
+  }
+
+  function showTyping() {
+    const bubble = createBubble("assistant");
+    bubble.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span>';
+    return bubble;
+  }
+
+  function showError(msg) {
+    const div = document.createElement("div");
+    div.className = "error-msg";
+    div.textContent = msg;
+    chatWindow.appendChild(div);
+    scrollToBottom();
+  }
+
+  function autoResize() {
+    userInput.style.height = "auto";
+    userInput.style.height = Math.min(userInput.scrollHeight, 160) + "px";
+  }
+
+  // ── Load models ─────────────────────────────────────────────────────────────
+
+  async function loadModels() {
+    try {
+      const res  = await fetch("/api/models");
+      const data = await res.json();
+      if (!res.ok || !data.models) throw new Error(data.error || "Unknown error");
+      data.models.forEach(m => {
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m;
+        modelSelect.appendChild(opt);
+      });
+    } catch (err) {
+      const opt = document.createElement("option");
+      opt.textContent = "Could not load models";
+      opt.disabled = true;
+      modelSelect.appendChild(opt);
+    }
+  }
+
+  // ── Sidebar: load bookings ───────────────────────────────────────────────────
+
+  async function loadBookings() {
+    const container = document.getElementById("tab-bookings");
+    try {
+      const res  = await fetch("/api/bookings");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load bookings");
+      const bookings = data.bookings || [];
+      if (bookings.length === 0) {
+        container.innerHTML = '<div class="sidebar-empty">No bookings found.</div>';
+        return;
+      }
+      container.innerHTML = bookings.map(b => {
+        const statusClass = (b.status || "pending").toLowerCase();
+        const travelDate  = b.travel_date ? new Date(b.travel_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—";
+        return `
+          <div class="booking-card">
+            <div class="booking-ref">${b.reference || "—"}</div>
+            <div class="booking-passenger">${b.passenger_name || "—"}</div>
+            <div class="booking-route">${b.origin || "—"} → ${b.destination || "—"}</div>
+            <div class="booking-date">${travelDate}</div>
+            <div class="booking-footer">
+              <span class="status-badge ${statusClass}">${b.status || "pending"}</span>
+            </div>
+          </div>`;
+      }).join("");
+    } catch (err) {
+      container.innerHTML = `<div class="sidebar-empty">Could not load bookings.</div>`;
+    }
+  }
+
+  // ── Sidebar: load payment cards ──────────────────────────────────────────────
+
+  async function loadCards() {
+    const container = document.getElementById("tab-cards");
+    try {
+      const res  = await fetch("/api/payment-cards");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load cards");
+      const cards = data.cards || [];
+      if (cards.length === 0) {
+        container.innerHTML = '<div class="sidebar-empty">No payment cards on file.</div>';
+        return;
+      }
+      container.innerHTML = cards.map(card => {
+        const last4 = card.card_number ? card.card_number.slice(-4) : "????";
+        return `
+          <div class="card-entry">
+            <div class="card-label">${card.card_brand || "Card"} •••• ${last4}</div>
+            <div class="card-holder">${card.cardholder_name || "—"}</div>
+            <div class="card-expiry">Exp: ${card.expiry || "—"}</div>
+          </div>`;
+      }).join("");
+    } catch (err) {
+      container.innerHTML = `<div class="sidebar-empty">Could not load payment cards.</div>`;
+    }
+  }
+
+  // ── Sidebar: refresh both tabs ───────────────────────────────────────────────
+
+  function refreshSidebar() {
+    loadBookings();
+    loadCards();
+  }
+
+  // ── Sidebar: tab switching ───────────────────────────────────────────────────
+
+  document.querySelectorAll(".sidebar-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".sidebar-tab").forEach(t => t.classList.remove("active"));
+      btn.classList.add("active");
+      const target = btn.dataset.tab;
+      document.querySelectorAll(".sidebar-content").forEach(panel => {
+        panel.classList.toggle("hidden", panel.id !== `tab-${target}`);
+      });
+    });
+  });
+
+  // ── Sidebar: toggle ──────────────────────────────────────────────────────────
+
+  document.getElementById("sidebar-toggle").addEventListener("click", () => {
+    sidebar.classList.add("sidebar--hidden");
+    showSidebarBtn.style.display = "flex";
+  });
+
+  showSidebarBtn.addEventListener("click", () => {
+    sidebar.classList.remove("sidebar--hidden");
+    showSidebarBtn.style.display = "none";
+  });
+
+  // ── Responsive: hide sidebar on narrow screens ───────────────────────────────
+
+  if (window.innerWidth <= 700) {
+    sidebar.classList.add("sidebar--hidden");
+    showSidebarBtn.style.display = "flex";
+  }
+
+  // ── Send message ────────────────────────────────────────────────────────────
+
+  async function sendMessage() {
+    const text = userInput.value.trim();
+    if (!text || isStreaming) return;
+
+    isStreaming = true;
+    sendBtn.disabled = true;
+
+    // Show user bubble
+    const userBubble = createBubble("user");
+    userBubble.textContent = text;
+    userInput.value = "";
+    autoResize();
+
+    conversationHistory.push({ role: "user", content: text });
+
+    // Show typing indicator
+    const assistantBubble = showTyping();
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: modelSelect.value,
+          messages: conversationHistory,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${response.status}`);
+      }
+
+      const reader  = response.body.getReader();
+      const decoder = new TextDecoder();
+      let   buffer  = "";
+      let   fullReply = "";
+      let   firstChunk = true;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop(); // keep incomplete line
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+
+          let chunk;
+          try { chunk = JSON.parse(raw); } catch { continue; }
+
+          if (chunk.error) { throw new Error(chunk.error); }
+
+          if (firstChunk) {
+            assistantBubble.textContent = "";
+            firstChunk = false;
+          }
+
+          fullReply += chunk.content;
+          assistantBubble.textContent = fullReply;
+          scrollToBottom();
+
+          if (chunk.done) break;
+        }
+      }
+
+      conversationHistory.push({ role: "assistant", content: fullReply });
+      refreshSidebar();
+
+    } catch (err) {
+      assistantBubble.closest(".bubble-row")?.remove();
+      showError(`Error: ${err.message}`);
+      // Roll back the user turn from history
+      conversationHistory.pop();
+    } finally {
+      isStreaming = false;
+      sendBtn.disabled = false;
+      userInput.focus();
+    }
+  }
+
+  // ── Clear ───────────────────────────────────────────────────────────────────
+
+  clearBtn.addEventListener("click", () => {
+    conversationHistory = [];
+    chatWindow.innerHTML = "";
+  });
+
+  // ── Events ──────────────────────────────────────────────────────────────────
+
+  sendBtn.addEventListener("click", sendMessage);
+
+  userInput.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  userInput.addEventListener("input", autoResize);
+
+  // ── Refresh button ──────────────────────────────────────────────────────────
+
+  document.getElementById("refresh-btn").addEventListener("click", refreshSidebar);
+
+  // ── Init ────────────────────────────────────────────────────────────────────
+  loadModels();
+  refreshSidebar();
+  userInput.focus();
+</script>
+</body>
+</html>
